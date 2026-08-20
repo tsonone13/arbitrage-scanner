@@ -274,12 +274,27 @@ data, not a one-shot design:
   length, not the post-filter remainder — confirmed this correctly drops
   that pair to 0.33 while leaving a genuine reworded match (Fed-meeting
   wording, see the code's `_MIN_SIMILARITY` comment) unaffected.
+- A third bug survived both of those fixes: a shared two-word proper noun
+  (a city, a person's name) could still clear both gates on its own when
+  the other title was short — "Will the San Francisco Pro Football team be
+  announced as the host for the 2031 Pro Football Championship?" matched
+  Polymarket's "Spread: San Francisco Giants (-2.5)" on nothing but "San
+  Francisco," a football hosting question and an unrelated baseball
+  point-spread bet. Fixed by raising `_MIN_SHARED_TOKENS` from 2 to 3 —
+  checked against four live categories before committing to it: removed
+  22/22 sports and 19/24 culture false positives this pattern produced,
+  while every genuine match in politics (1/1) and elections (16/16)
+  survived unchanged. See the code's `_MIN_SHARED_TOKENS` comment for the
+  full data, including why 4 was tried and rejected (it cuts real matches
+  too, since most genuine "name + one context word" pairs only clear 3).
 
-A title match here is still a **lead, not a verified pair** — the website
-shows it as `UNVERIFIED MATCH` / `UNVERIFIED — NOT PROFITABLE` (see "How to
-run the website" below), never a trusted `ARB FOUND`, and it still needs
-the same manual check (read both venues' actual resolution rules and
-dates) before it's safe to promote into `data/market_pairs.csv`.
+A title match here is still a **lead, not a verified pair**. The website
+shows it with the same `PASS` / `FEE_ADJUSTED_NO_EDGE` / `NO_EDGE`
+vocabulary as a crosswalk market rather than a separate "unverified"
+badge — a deliberate product decision, with a sitewide disclaimer instead
+of a per-card caveat — but it still needs the same manual check (read
+both venues' actual resolution rules and dates) before it's safe to
+promote into `data/market_pairs.csv`.
 
 ### Two speeds, on purpose
 
@@ -306,11 +321,18 @@ so there are two distinct modes instead of one:
   fetched as metadata only first (`get_market_metadata()`, no CLOB calls),
   title-candidates are found from that metadata, and only the
   crosswalk-covered and newly-candidate-matched markets ever get priced via
-  `get_normalized_prices_for_ids()`. A `--category elections` run lists
-  ~14,900 markets across both venues but only ever prices the ~100 that
-  matched something — the **Scan Summary** shows both numbers so it's clear
-  "priced" doesn't mean "everything else was ignored," it means everything
-  else had nothing to compare it to.
+  `get_normalized_prices_for_ids()` — the **Scan Summary** shows both the
+  total listed and the number actually priced, so it's clear "priced"
+  doesn't mean "everything else was ignored," it means everything else had
+  nothing to compare it to. By default this is capped (500 Kalshi events /
+  250 Polymarket events per category, higher for a couple of categories
+  that need it — see `main.py`'s `_CATEGORY_SCAN_KALSHI_MAX_EVENTS*`
+  constants) so a scan stays safely inside the live website's 512MB host.
+  Add `--full-depth` to bypass that entirely and page each venue to its
+  real end instead of a fixed limit — confirmed directly (2026-08-20)
+  Kalshi's whole catalog is ~11,000 events and Sports alone is ~54,000
+  active markets, so this is real memory and real time (minutes, not
+  seconds) on your own machine, never something the live deployment does.
 
 ## Why importers are separate from the arb engine
 
@@ -403,7 +425,8 @@ nothing to show.
 | Flag | Choices / type | Default | Meaning |
 |---|---|---|---|
 | `--source` | mock, csv, kalshi, polymarket, live | mock | Where prices come from. `live` = Kalshi + Polymarket combined. |
-| `--category` | culture, politics, elections, sports, financials, economics, tech, climate | none | Discovery mode: scope a scan to one category and search for new candidates. Slower than the default fast path. See "Category-scoped scanning" below. |
+| `--category` | culture, politics, elections, sports, financials, economics, tech, climate, all | none | Discovery mode: scope a scan to one category (or every verified category at once) and search for new candidates. Slower than the default fast path. See "Category-scoped scanning" below. |
+| `--full-depth` | flag | off | Only valid with a single `--category` (not `all`). Bypasses the memory-safe scan caps entirely and pages each venue to its real end — real time and memory on your own machine, never used by the live website. |
 | `--min-edge` | float | 0.005 | Minimum net edge (after fee buffer) required to report a trade. |
 | `--fee-buffer` | float | 0.003 | Flat cost/slippage buffer subtracted from gross edge before filtering. |
 | `--top` | int | 20 | Max opportunities printed (the engine still scans everything internally). |

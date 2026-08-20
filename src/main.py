@@ -91,6 +91,21 @@ def parse_args() -> argparse.Namespace:
             "Default: off (fast path)."
         ),
     )
+    parser.add_argument(
+        "--full-depth",
+        action="store_true",
+        help=(
+            "Only valid with a single --category (not 'all'). Bypasses this "
+            "project's memory-safe scan caps entirely and pages that "
+            "category to the venue's real end, not a fixed limit -- the "
+            "website's live deployment always uses the capped version, "
+            "sized for its 512MB host; this is for a local run on your own "
+            "machine, where that ceiling doesn't apply. Real cost: a "
+            "single category can mean tens of thousands of markets and "
+            "multiple minutes, not seconds -- confirmed directly, Kalshi's "
+            "Sports category alone is ~54,000 active markets."
+        ),
+    )
     parser.add_argument("--min-edge", type=float, default=0.005, help="Minimum net edge to report. Default: 0.005")
     parser.add_argument("--fee-buffer", type=float, default=0.003, help="Flat fee/slippage buffer. Default: 0.003")
     parser.add_argument("--top", type=int, default=20, help="Max opportunities to print. Default: 20")
@@ -184,9 +199,17 @@ _CATEGORY_SCAN_KALSHI_MAX_EVENTS_OVERRIDES = {
     "tech": 2500,
 }
 
+# For --full-depth (CLI-only, see load_prices_for_category's docstring).
+# Confirmed (2026-08-20) Kalshi's entire catalog is ~11,000 events and each
+# venue's own pagination already stops naturally once it runs out of real
+# results (Kalshi: empty cursor; Polymarket: empty page / 422 past a
+# tag's real result count) -- this just needs to be larger than either
+# venue could ever actually have, not an exact count.
+_FULL_DEPTH_MAX_EVENTS = 200_000
+
 
 def load_prices_for_category(
-    source: str, category: str, pairs: dict[tuple[str, str], tuple[str, str]]
+    source: str, category: str, pairs: dict[tuple[str, str], tuple[str, str]], full_depth: bool = False
 ) -> tuple[list[NormalizedPrice], int, list[tuple[NormalizedPrice, NormalizedPrice]]]:
     """Discovery path: list one category on both venues, find title-match
     candidates from metadata alone, then price only the crosswalk + matched
@@ -201,11 +224,29 @@ def load_prices_for_category(
     kalshi_importer.py / polymarket_importer.py's _catalog_cache), a
     category scan that isn't the first one in a session is usually
     dominated by pricing the matched subset below, not listing.
+
+    full_depth (default False, CLI-only -- the website never passes this):
+    bypasses the memory-safe caps below entirely and pages each venue to
+    natural completion (a number far past either venue's real catalog
+    size, so pagination just runs until it stops on its own). Deliberately
+    NOT reachable from opportunity_view.py/api.py -- this function's
+    signature accepts it, but the website's call site never supplies it,
+    so a full-depth scan is structurally impossible to trigger over the
+    public endpoint, not just discouraged by convention. Confirmed
+    (2026-08-20) Kalshi's whole catalog is ~11,000 events and Sports alone
+    is ~54,000 active markets -- full depth on a real category is a real
+    amount of memory and a real amount of time (multiple minutes, not
+    seconds), meant for a local run on your own machine, never this
+    project's 512MB deployment.
     """
     alias = _CATEGORY_ALIASES[category]
     kalshi_prices: list[NormalizedPrice] = []
     poly_metadata: list[NormalizedPrice] = []
-    kalshi_max_events = _CATEGORY_SCAN_KALSHI_MAX_EVENTS_OVERRIDES.get(category, _CATEGORY_SCAN_KALSHI_MAX_EVENTS)
+    kalshi_max_events = (
+        _FULL_DEPTH_MAX_EVENTS if full_depth
+        else _CATEGORY_SCAN_KALSHI_MAX_EVENTS_OVERRIDES.get(category, _CATEGORY_SCAN_KALSHI_MAX_EVENTS)
+    )
+    poly_max_events = _FULL_DEPTH_MAX_EVENTS if full_depth else _CATEGORY_SCAN_POLYMARKET_MAX_EVENTS
 
     kalshi_fetch = (
         (lambda: KalshiImporter(
@@ -219,7 +260,7 @@ def load_prices_for_category(
     # comment above for why this is no longer as high as it used to be.
     poly_fetch = (
         (lambda: PolymarketImporter(
-            max_events=_CATEGORY_SCAN_POLYMARKET_MAX_EVENTS, tag_slug=alias["polymarket_tag_slug"]
+            max_events=poly_max_events, tag_slug=alias["polymarket_tag_slug"]
         ).get_market_metadata())
         if source in ("polymarket", "live") else None
     )
@@ -338,6 +379,8 @@ def main() -> None:
         raise SystemExit("--top must be a positive integer")
     if args.bankroll <= 0:
         raise SystemExit("--bankroll must be a positive number")
+    if args.full_depth and (not args.category or args.category == "all"):
+        raise SystemExit("--full-depth requires a single --category (not 'all')")
 
     terminal_reporter.print_header(args.source)
     pairs = load_market_pairs(str(_DATA_DIR / "market_pairs.csv"))
@@ -345,13 +388,21 @@ def main() -> None:
     total_listed: int | None = None
     candidates: list[tuple[NormalizedPrice, NormalizedPrice]] = []
 
+    if args.full_depth:
+        terminal_reporter.console.print(
+            "[yellow]--full-depth: paging both venues to their real end for this one category -- "
+            "this can mean tens of thousands of markets and several minutes, not seconds.[/yellow]"
+        )
+
     try:
         if args.source not in _LIVE_SOURCES:
             prices = load_prices_flat(args.source)
         elif args.category == "all":
             prices, total_listed, candidates = load_prices_for_all_categories(args.source, pairs)
         elif args.category:
-            prices, total_listed, candidates = load_prices_for_category(args.source, args.category, pairs)
+            prices, total_listed, candidates = load_prices_for_category(
+                args.source, args.category, pairs, full_depth=args.full_depth
+            )
         else:
             prices = load_prices_fast(args.source, pairs)
     except Exception as exc:
