@@ -37,8 +37,23 @@ _BOOKS_BATCH_SIZE = 500
 # elsewhere), so caching it briefly doesn't make any shown price stale --
 # see ttl_cache.py. Keyed by (max_events, tag_slug) since, unlike Kalshi,
 # tag_slug is a real server-side filter that changes what gets fetched.
+#
+# max_entries lowered from 3 to 2 (2026-08-20): confirmed on the real
+# server that a realistic sequence -- a user just browsing several
+# category tabs, no scan overlap needed -- accumulates standing cache
+# memory the concurrency lock doesn't touch at all (that lock only
+# serializes concurrent heavy work, not sequential caching). Scanning
+# elections, politics, and sports back to back (this project's 3 heaviest
+# by nested-market count: 6,444/5,533/5,104) left all three cached
+# simultaneously at max_entries=3, and the server's RSS climbed to
+# ~416MB standing -- before even counting a new scan's own transient
+# processing on top. At max_entries=2, only the 2 most recently used
+# categories' Polymarket catalogs stay warm; a 3rd, older one gets
+# re-fetched (a real but small latency cost -- listings are cached
+# specifically because they're slow-changing, not because a re-fetch is
+# expensive in absolute terms) in exchange for real memory margin back.
 _CATALOG_CACHE_TTL_SECONDS = 90
-_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS, max_entries=3)
+_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS, max_entries=2)
 
 
 def _parse_json_list(value: object) -> list:
