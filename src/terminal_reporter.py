@@ -10,15 +10,13 @@ console = Console()
 
 _TYPE_LABELS = {
     "binary": "Binary cross-venue",
-    "fullbook_yes": "Full-book YES basket",
-    "fullbook_no": "Full-book NO basket",
 }
 
 
-def print_header(source: str, arb_type: str) -> None:
+def print_header(source: str) -> None:
     console.print(
         f"\n[bold]Arbitrage Engine for Prediction Markets[/bold]  "
-        f"[dim](source={source}, type={arb_type})[/dim]\n"
+        f"[dim](source={source})[/dim]\n"
     )
 
 
@@ -133,8 +131,6 @@ def print_opportunity(
     real_profit = sizing.get("estimated_profit") if sizing else None
     if opp.status == "NO EDGE":
         title, color = "[bold red]NOT PROFITABLE[/bold red]", "red"
-    elif opp.status == "REVIEW":
-        title, color = "[bold yellow]POSSIBLE ARB -- NEEDS REVIEW[/bold yellow]", "yellow"
     elif real_profit is None or real_profit <= 0:
         title, color = "[bold yellow]FLAT-BUFFER PASS -- REAL FEES ERASE IT[/bold yellow]", "yellow"
     else:

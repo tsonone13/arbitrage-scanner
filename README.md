@@ -9,11 +9,12 @@ frontend, same underlying pipeline; see "How to run the website" below).
 
 This is v1. It does **not** place trades and does **not** use any API key
 for its price data (Kalshi and Polymarket are both read over public,
-unauthenticated endpoints — see "Live data" below). Right now it only runs
-the **binary cross-venue** check (buy YES on one venue, NO on another) —
-full-book multi-outcome baskets exist in the code but are disabled pending
-more matching safeguards; see "Full-book checks: built but currently
-disabled" below.
+unauthenticated endpoints — see "Live data" below). It only runs the
+**binary cross-venue** check (buy YES on one venue, NO on another) —
+multi-outcome full-book basket checks (buy the cheapest YES/NO across every
+outcome in a mutually-exclusive set) were built, tested, and then removed:
+they turned out to be fragile on live data (see "Market matching" below for
+the same kind of lesson on the matching side) and aren't needed.
 
 ## What the tool does
 
@@ -103,40 +104,6 @@ modified for this — the check lives entirely in the display layer
 same as every other feature added on top of it. See `slippage.py`'s module
 docstring for the fee formula and why Kalshi's rate is flagged as an
 estimate while Polymarket's is venue-confirmed.
-
-## Full-book checks: built but currently disabled
-
-`check_full_book_yes_arbs` and `check_full_book_no_arbs` still exist in
-`arb_engine.py`, fully implemented and tested against mock/CSV data, but
-`main.py` no longer calls them — `--type` only accepts `binary` right now.
-They were pulled out after the checks above turned up real problems in live
-multi-outcome data (see below); re-enabling them is future work, not a
-`--type` flag away.
-
-For a market with N mutually exclusive outcomes where exactly one pays $1,
-buying the single cheapest YES ask for *every* outcome guarantees you hold
-the winning YES no matter which outcome happens (full-book NO is the
-mirror: buy the cheapest NO on every outcome, `N - 1` of them pay $1,
-guaranteed payout is `N - 1`). Both require a **complete, exhaustive**
-outcome set — if even one outcome is missing, "guaranteed payout" is a lie.
-
-That completeness requirement is where these checks turned out to be
-fragile on live data. Kalshi's `mutually_exclusive` flag (and Polymarket's
-`negRisk`) only promise that *at most one* listed outcome can win — not
-that one of them *must*. Kalshi's own "What will be the 51st state in
-Trump's term?" event lists 8 candidate territories with no listed outcome
-for "no new state at all," even though a sibling Kalshi market prices that
-base case at roughly 87%. Buying every listed YES there isn't arbitrage —
-it's an uncovered bet that something on the list happens at all, and most
-of the time it wouldn't pay out. `arb_engine.py` has a guard for this
-(`SUSPICIOUS_EDGE_RATIO`: any full-book basket whose gross edge is ≥20% of
-the guaranteed payout gets `status = "REVIEW"` instead of `"PASS"`, shown
-in a yellow panel instead of green), which is a real mitigation but not a
-proof of correctness — it's a heuristic on top of a fundamentally
-unverifiable assumption (that the listed outcomes really are the whole
-picture). Given that, and given the binary path had its own real bug, the
-call for now is to keep the surface area small and trustworthy rather than
-show a check with a known, only-partially-mitigated failure mode.
 
 ## Market matching: a verified crosswalk, plus exact-title fallback
 
@@ -438,7 +405,6 @@ nothing to show.
 |---|---|---|---|
 | `--source` | mock, csv, kalshi, polymarket, live | mock | Where prices come from. `live` = Kalshi + Polymarket combined. |
 | `--category` | culture, politics, elections, sports, financials, economics, tech, climate | none | Discovery mode: scope a scan to one category and search for new candidates. Slower than the default fast path. See "Category-scoped scanning" below. |
-| `--type` | binary | binary | Which arb check(s) to run. Full-book checks exist in `arb_engine.py` but are not wired up right now — see above. |
 | `--min-edge` | float | 0.005 | Minimum net edge (after fee buffer) required to report a trade. |
 | `--fee-buffer` | float | 0.003 | Flat cost/slippage buffer subtracted from gross edge before filtering. |
 | `--top` | int | 20 | Max opportunities printed (the engine still scans everything internally). |
@@ -529,9 +495,6 @@ acceptable.
 
 ## What future versions will add
 
-- Re-enabling full-book YES/NO checks once there's a better answer to the
-  "is this outcome set really exhaustive" problem than a heuristic edge-size
-  cutoff
 - Deeper Kalshi order-book depth (via an authenticated key) instead of
   top-of-book only
 - Other prediction-market venue importers (PredictIt, ForecastEx, and

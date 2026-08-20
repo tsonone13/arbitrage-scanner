@@ -9,7 +9,8 @@ Correctness note: a Kalshi "event" can bundle markets that are genuinely
 mutually exclusive (e.g. "who wins the election") or markets that are merely
 related but independent/correlated (e.g. "over 1.5 goals" and "over 2.5
 goals" for the same game -- both can be true at once). Only the former is a
-valid basket for full-book arbitrage math. Kalshi flags this for us via
+single real proposition split across outcomes; the latter are separate bets
+that happen to share an event. Kalshi flags this for us via
 `mutually_exclusive` on the event object, so we only tag a group as
 "multi_outcome" when that flag is true and there's more than one market in
 it; everything else is treated as its own standalone "binary" market so it

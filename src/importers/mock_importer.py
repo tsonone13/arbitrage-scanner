@@ -1,16 +1,21 @@
 """Fake multi-venue data for exercising the pipeline without any network calls.
 
-market_type is "binary" for a single yes/no proposition (only the per-outcome
-binary cross-venue check is valid on it) or "multi_outcome" for a complete,
-mutually-exclusive, exhaustive outcome set (full-book YES/NO checks are only
-valid there -- see the guard in arb_engine.py). A single outcome carved out of
-a bigger event, like "World Cup Winner / USA", is still "binary": the other
-~30 countries aren't in this dataset, so treating it as a complete partition
-would produce a nonsense full-book "arb".
+market_type is "binary" for a single yes/no proposition, or "multi_outcome"
+for a complete, mutually-exclusive, exhaustive outcome set -- this only
+controls grouping (match_markets() keys on (canonical_market_name,
+market_type), so a multi_outcome market's outcomes stay grouped together
+rather than colliding with an unrelated binary market of the same name).
+Only the per-outcome binary cross-venue check runs against either kind now
+(full-book basket checks, which market_type="multi_outcome" originally
+existed to gate, were removed from arb_engine.py -- see the README). A
+single outcome carved out of a bigger event, like "World Cup Winner / USA",
+is still "binary": the other ~30 countries aren't in this dataset.
 
-Five required scenarios, in order: (1) binary arb, (2) binary no-arb,
-(3) multi-outcome full-book YES arb, (4) multi-outcome no-arb,
-(5) tiny edge that min-edge filtering should drop.
+Scenarios, in order: (1) binary arb, (2) binary no-arb, (3) multi-outcome
+market across several venues (demonstrates the grouping behavior above;
+produces no basket-level result, just whatever per-outcome cross-venue
+pairs the binary check finds), (4) another multi-outcome market, same
+purpose, (5) tiny edge that min-edge filtering should drop.
 """
 
 from models import NormalizedPrice
@@ -65,7 +70,7 @@ _MOCK_ROWS: list[dict] = [
         taker_fee_rate=0.05,
     ),
 
-    # --- Scenario 3: multi-outcome market with a full-book YES arb ---
+    # --- Scenario 3: multi-outcome market across several venues ---
     dict(
         venue="Kalshi", market_id="KXOSCAR-26-A",
         canonical_market_name="2026 Best Picture Winner", raw_market_name="Will Movie A win Best Picture?",

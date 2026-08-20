@@ -1,7 +1,7 @@
 """Optimal trade size under slippage, plus a real trading-fee breakdown,
 layered on top of already-detected opportunities. This never changes
 whether something is detected as an arb -- arb_engine.py's detection,
-filtering, and PASS/REVIEW/NO EDGE classification are untouched. All this
+filtering, and PASS/NO EDGE classification are untouched. All this
 does is take an opportunity that already exists and estimate (a) how large
 a real fill could be before per-unit slippage erodes the edge below
 breakeven, and (b) what that fill would actually cost in venue trading

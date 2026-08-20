@@ -79,17 +79,6 @@ def parse_args() -> argparse.Namespace:
         help="Where to load prices from. 'live' = Kalshi + Polymarket combined. Default: mock",
     )
     parser.add_argument(
-        "--type",
-        choices=["binary"],
-        default="binary",
-        help=(
-            "Which arb check(s) to run. Only 'binary' (cross-venue YES/NO) is "
-            "wired up right now -- full-book YES/NO checks were pulled out of "
-            "the active pipeline pending more matching safeguards. The math "
-            "still lives in arb_engine.py."
-        ),
-    )
-    parser.add_argument(
         "--category",
         choices=sorted(_CATEGORY_ALIASES) + ["all"],
         default=None,
@@ -272,12 +261,11 @@ def load_prices_flat(source: str) -> list[NormalizedPrice]:
 
 
 def run_checks(
-    groups: list[MarketGroup], arb_type: str, fee_buffer: float, min_edge: float
+    groups: list[MarketGroup], fee_buffer: float, min_edge: float
 ) -> list[ArbOpportunity]:
     opportunities: list[ArbOpportunity] = []
     for group in groups:
-        if arb_type == "binary":
-            opportunities.extend(check_binary_cross_venue_arbs(group, fee_buffer, min_edge))
+        opportunities.extend(check_binary_cross_venue_arbs(group, fee_buffer, min_edge))
     return opportunities
 
 
@@ -288,7 +276,7 @@ def main() -> None:
     if args.bankroll <= 0:
         raise SystemExit("--bankroll must be a positive number")
 
-    terminal_reporter.print_header(args.source, args.type)
+    terminal_reporter.print_header(args.source)
     pairs = load_market_pairs(str(_DATA_DIR / "market_pairs.csv"))
 
     total_listed: int | None = None
@@ -320,7 +308,7 @@ def main() -> None:
     prices = apply_market_pairs(prices, pairs)
     prices_by_key = {(p.venue, p.market_id): p for p in prices}
     groups = match_markets(prices)
-    opportunities = run_checks(groups, args.type, args.fee_buffer, args.min_edge)
+    opportunities = run_checks(groups, args.fee_buffer, args.min_edge)
     ranked = rank_opportunities(opportunities)
 
     terminal_reporter.print_scan_summary(prices_by_venue, len(groups), len(ranked), total_listed=total_listed)

@@ -8,11 +8,12 @@ signs or places orders.
 Correctness note: a Gamma "event" can bundle markets that are genuinely
 mutually exclusive (e.g. "who wins the nomination") or markets that are
 merely related but independent (e.g. separate per-game winner markets in a
-best-of-5 series -- both can resolve YES). Only the former is a valid basket
-for full-book arbitrage math. Polymarket flags this for us via `negRisk` on
-the event object -- it's the actual mechanism that lets capital move between
-truly mutually-exclusive outcomes -- so we only tag a group "multi_outcome"
-when that flag is true and there's more than one market in it.
+best-of-5 series -- both can resolve YES). Only the former is a single real
+proposition split across outcomes; the latter are separate bets that happen
+to share an event. Polymarket flags this for us via `negRisk` on the event
+object -- it's the actual mechanism that lets capital move between truly
+mutually-exclusive outcomes -- so we only tag a group "multi_outcome" when
+that flag is true and there's more than one market in it.
 """
 
 import json
