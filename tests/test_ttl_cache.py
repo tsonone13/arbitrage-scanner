@@ -148,6 +148,41 @@ class TestTTLCache(unittest.TestCase):
         self.assertIn("start-a", call_order)
         self.assertIn("start-b", call_order)
 
+    def test_no_max_entries_never_evicts(self):
+        cache = TTLCache(ttl_seconds=90)  # max_entries defaults to None
+        for key in ["a", "b", "c", "d", "e"]:
+            cache.get_or_fetch(key, lambda k=key: k)
+
+        self.assertEqual(list(cache._store.keys()), ["a", "b", "c", "d", "e"])
+
+    def test_max_entries_evicts_least_recently_used_on_insert(self):
+        """Confirmed necessary on a real 512MB deployment: without a cap,
+        scanning several categories in a row accumulates one full catalog
+        per category simultaneously -- see this module's docstring and
+        ttl_cache.py's max_entries comment for the real incident.
+        """
+        cache = TTLCache(ttl_seconds=90, max_entries=2)
+        cache.get_or_fetch("a", lambda: "value-a")
+        cache.get_or_fetch("b", lambda: "value-b")
+        cache.get_or_fetch("c", lambda: "value-c")  # over the cap of 2 -> evicts "a" (least recently used)
+
+        self.assertEqual(list(cache._store.keys()), ["b", "c"])
+        fetch_a_again = mock.Mock(return_value="value-a-refetched")
+        self.assertEqual(cache.get_or_fetch("a", fetch_a_again), "value-a-refetched")
+        fetch_a_again.assert_called_once()  # "a" was genuinely evicted, not just reordered
+
+    def test_reading_an_entry_marks_it_recently_used(self):
+        """LRU, not FIFO: touching "a" via a read must protect it from the
+        next eviction the same way inserting/re-fetching it would.
+        """
+        cache = TTLCache(ttl_seconds=90, max_entries=2)
+        cache.get_or_fetch("a", lambda: "value-a")
+        cache.get_or_fetch("b", lambda: "value-b")
+        cache.get_or_fetch("a", lambda: "value-a-should-not-be-called")  # read -> "a" now most recently used
+        cache.get_or_fetch("c", lambda: "value-c")  # over the cap -> evicts "b", not "a"
+
+        self.assertEqual(list(cache._store.keys()), ["a", "c"])
+
 
 if __name__ == "__main__":
     unittest.main()

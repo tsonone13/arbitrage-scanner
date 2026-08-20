@@ -316,7 +316,7 @@ _MAX_SCAN_CARDS_SHOWN = 3
 # category. Short on purpose -- long enough to blunt rapid-fire repeats,
 # short enough that a deliberate, spaced-out RESCAN still gets live numbers.
 _SCAN_RESULT_CACHE_TTL_SECONDS = 10
-_scan_result_cache = TTLCache(_SCAN_RESULT_CACHE_TTL_SECONDS)
+_scan_result_cache = TTLCache(_SCAN_RESULT_CACHE_TTL_SECONDS, max_entries=4)
 
 
 def build_category_scan_result(category: str) -> dict:

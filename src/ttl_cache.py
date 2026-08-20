@@ -25,16 +25,39 @@ any of them finished caching a result, which is exactly the amplification
 a cache in front of a public endpoint needs to prevent. Whichever request
 gets the lock first does the real fetch; the rest wait for it and then
 share its result.
+
+max_entries (optional): confirmed necessary, not just theoretical, on a
+real 512MB deployment (Render free tier, 2026-08-20): each cached catalog
+can hold thousands of raw event objects, and the Polymarket catalog cache
+is keyed by (max_events, tag_slug) -- one distinct key per category. With
+no eviction, scanning several categories in a row (very plausible normal
+use -- clicking through tabs) accumulated a separate multi-thousand-row
+catalog in memory per category *simultaneously* for the whole TTL window,
+on top of each request's own peak usage while processing -- confirmed as
+a real contributor to an out-of-memory crash, not a hypothetical one. When
+set, the least-recently-used entry is evicted once the cache would exceed
+this many entries -- bounds total retained memory regardless of how many
+distinct keys (categories) get scanned in a session.
 """
 
 import threading
 import time
+from collections import OrderedDict
 
 
 class TTLCache:
-    def __init__(self, ttl_seconds: float):
+    def __init__(self, ttl_seconds: float, max_entries: int | None = None):
         self._ttl = ttl_seconds
-        self._store: dict[object, tuple[float, object]] = {}
+        self._max_entries = max_entries
+        self._store: OrderedDict[object, tuple[float, object]] = OrderedDict()
+        # Guards all direct access to _store (including from the lock-free
+        # fast path in _fresh) -- eviction and move-to-end are compound
+        # operations on a shared structure, unsafe under concurrent callers
+        # without this. Cheap and in-memory only (no I/O under this lock),
+        # so it doesn't reintroduce the cross-key blocking _lock_for exists
+        # to avoid -- that's specifically about not blocking on a slow
+        # network fetch for an unrelated key.
+        self._store_lock = threading.Lock()
         self._locks: dict[object, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
@@ -60,17 +83,25 @@ class TTLCache:
             if value is not _MISS:
                 return value
             value = fetch()
-            self._store[key] = (time.time(), value)
+            with self._store_lock:
+                self._store[key] = (time.time(), value)
+                self._store.move_to_end(key)
+                if self._max_entries is not None:
+                    while len(self._store) > self._max_entries:
+                        self._store.popitem(last=False)  # evict least-recently-used
             return value
 
     def _fresh(self, key: object):
-        cached = self._store.get(key)
-        if cached is None:
-            return _MISS
-        fetched_at, value = cached
-        if time.time() - fetched_at >= self._ttl:
-            return _MISS
-        return value
+        with self._store_lock:
+            cached = self._store.get(key)
+            if cached is None:
+                return _MISS
+            fetched_at, value = cached
+            if time.time() - fetched_at >= self._ttl:
+                del self._store[key]  # expired -- drop it now, don't wait for eviction to free the memory
+                return _MISS
+            self._store.move_to_end(key)  # touch on read too: true LRU, not just insertion order
+            return value
 
 
 _MISS = object()

@@ -43,7 +43,7 @@ _ACTIVE_STATUSES = {"active", "open"}
 # this cost once. Never applied to price/order-book calls (see
 # ttl_cache.py's own docstring for why that split is safe).
 _CATALOG_CACHE_TTL_SECONDS = 90
-_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS)
+_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS, max_entries=2)
 
 # Kalshi's exact per-market taker fee rate lives behind GET /margin/fee_tiers,
 # which requires a signed API key (KALSHI-ACCESS-*) -- not used here, same as

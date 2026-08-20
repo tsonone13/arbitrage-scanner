@@ -38,7 +38,7 @@ _BOOKS_BATCH_SIZE = 500
 # see ttl_cache.py. Keyed by (max_events, tag_slug) since, unlike Kalshi,
 # tag_slug is a real server-side filter that changes what gets fetched.
 _CATALOG_CACHE_TTL_SECONDS = 90
-_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS)
+_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS, max_entries=3)
 
 
 def _parse_json_list(value: object) -> list:

@@ -128,6 +128,31 @@ def load_prices_fast(
     return prices
 
 
+# Confirmed live (2026-08-20) on a real 512MB deployment (Render free
+# tier): a single category scan at the old defaults (Kalshi's own 6000,
+# Polymarket 10000) was enough to get the instance OOM-killed. max_events
+# caps EVENTS fetched, not the resulting NormalizedPrice row count -- each
+# Kalshi/Polymarket "event" can nest many nested markets, and the ratio
+# varies hugely by category. Measured directly against the worst real
+# case (sports, Polymarket's own sports events average ~16 nested markets
+# each): 1000/1000 events produced 810 Kalshi + 15,932 Polymarket rows at
+# ~400MB RSS for the fetch step alone, before fuzzy-matching/pricing even
+# runs. 500/250 produced 662 + 4,221 rows at ~223MB RSS for the same
+# step -- confirmed (see build_category_scan_result's own memory check)
+# this leaves real headroom for the rest of the pipeline on top of the
+# baseline FastAPI/uvicorn process. These are deliberately asymmetric
+# (Polymarket much lower) because Polymarket's events nest far more
+# markets per event than Kalshi's for this project's categories -- cutting
+# both by the same fraction would have left Polymarket dominating memory
+# anyway. This only reduces how deep into each venue's long tail of
+# thin/illiquid markets a scan reaches, not whether the scan runs at all;
+# load_prices_for_all_categories() (the CLI-only `--category all` path,
+# which runs on the user's own machine, not this memory-constrained
+# server) is untouched.
+_CATEGORY_SCAN_KALSHI_MAX_EVENTS = 500
+_CATEGORY_SCAN_POLYMARKET_MAX_EVENTS = 250
+
+
 def load_prices_for_category(
     source: str, category: str, pairs: dict[tuple[str, str], tuple[str, str]]
 ) -> tuple[list[NormalizedPrice], int, list[tuple[NormalizedPrice, NormalizedPrice]]]:
@@ -150,14 +175,19 @@ def load_prices_for_category(
     poly_metadata: list[NormalizedPrice] = []
 
     kalshi_fetch = (
-        (lambda: KalshiImporter(category=alias["kalshi_category"]).get_normalized_prices())
+        (lambda: KalshiImporter(
+            max_events=_CATEGORY_SCAN_KALSHI_MAX_EVENTS, category=alias["kalshi_category"]
+        ).get_normalized_prices())
         if source in ("kalshi", "live") else None
     )
-    # Metadata-only, no CLOB calls -- cheap enough to ask for far more than
-    # the fast-path default (500) and just let it stop naturally once a tag
-    # runs out of results (list_markets() handles that).
+    # Metadata-only, no CLOB calls -- cheap enough to ask for more than the
+    # fast-path default (500) and just let it stop naturally once a tag
+    # runs out of results (list_markets() handles that) -- see the module
+    # comment above for why this is no longer as high as it used to be.
     poly_fetch = (
-        (lambda: PolymarketImporter(max_events=10000, tag_slug=alias["polymarket_tag_slug"]).get_market_metadata())
+        (lambda: PolymarketImporter(
+            max_events=_CATEGORY_SCAN_POLYMARKET_MAX_EVENTS, tag_slug=alias["polymarket_tag_slug"]
+        ).get_market_metadata())
         if source in ("polymarket", "live") else None
     )
 
