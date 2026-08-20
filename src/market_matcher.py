@@ -228,12 +228,29 @@ def find_title_candidates(
     prices: list[NormalizedPrice],
     pairs: dict[tuple[str, str], tuple[str, str]] | None = None,
     min_similarity: float = _MIN_SIMILARITY,
+    min_shared_tokens: int = _MIN_SHARED_TOKENS,
 ) -> list[tuple[NormalizedPrice, NormalizedPrice]]:
     """Surface possible cross-venue matches by fuzzy title similarity, for a
-    human (or the site's UNVERIFIED_MATCH display) to review -- a lead,
-    never a verified match, and never fed to match_markets()/arb_engine
-    directly. See the module docstring for why fuzzy is safe here even
-    though it's deliberately avoided for trusted matching.
+    human (or the website's scan feature) to review -- a lead, never a
+    verified match, and never fed to match_markets()/arb_engine directly.
+    See the module docstring for why fuzzy is safe here even though it's
+    deliberately avoided for trusted matching.
+
+    min_shared_tokens defaults to the module constant (3 -- see its own
+    comment for the false-positive history that value fixes), but is a
+    real parameter, not just a hardcoded wall: confirmed directly
+    (2026-08-20) that 3 has a real recall cost of its own, not just a
+    precision win -- "When will Anthropic officially announce an IPO?"
+    vs. "Will Anthropic IPO by September 15, 2026?" is a genuine match
+    that shares only 2 tokens ("anthropic", "ipo"), the rest of each
+    title being phrasing/date filler, not new subject matter. No
+    reliable way was found to tell that case apart from a real false
+    positive (a shared two-word proper noun, e.g. "san"/"francisco",
+    across two genuinely unrelated propositions) using token overlap
+    alone -- both are "2 shared tokens, rest of each title differs." A
+    lower value here is a deliberate, manual override for someone who
+    wants to search more permissively and is prepared to review more
+    false positives to find it, not a new default.
 
     Two scale-driven steps happen before any pair is scored, both keyed off
     each token's document frequency within THIS batch (i.e. this one scan,
@@ -300,7 +317,7 @@ def find_title_candidates(
             # original token sets -- see that function's docstring for why
             # the denominator must not be the already-filtered length.
             shared = len(k_sig & poly_significant[i])
-            if shared < _MIN_SHARED_TOKENS:
+            if shared < min_shared_tokens:
                 continue
             if _token_overlap(k_tokens, p_tokens, common_tokens) < min_similarity:
                 continue

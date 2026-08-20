@@ -96,14 +96,21 @@ class KalshiImporter(VenueImporter):
     events).
     """
 
-    def __init__(self, max_events: int = 6000, category: str | None = None):
+    def __init__(self, max_events: int = 6000, category: str | tuple[str, ...] | None = None):
         """category, when set, must match Kalshi's own event-level `category`
         field exactly (e.g. "Entertainment") -- there's no server-side filter
         for it (confirmed empirically, same as the sort parameter), so this
-        still pages through up to max_events and filters client-side.
+        still pages through up to max_events and filters client-side. Accepts
+        either one category or a tuple of several: Kalshi's own taxonomy
+        isn't perfectly consistent between its /series and /events category
+        fields for the same underlying market family (confirmed directly,
+        2026-08-20 -- KXIPOANTHROPIC's series record says "Financials", but
+        the actual event under it, KXIPOANTHROPIC-DATE, reports "Companies"),
+        so this project's `financials` category alias covers both -- see
+        main.py's `_CATEGORY_ALIASES`.
         """
         self._max_events = max_events
-        self._category = category
+        self._categories = frozenset((category,) if isinstance(category, str) else category) if category else None
 
     @property
     def venue_name(self) -> str:
@@ -228,7 +235,7 @@ class KalshiImporter(VenueImporter):
         prices: list[NormalizedPrice] = []
 
         for event in self.list_markets():
-            if self._category is not None and event.get("category") != self._category:
+            if self._categories is not None and event.get("category") not in self._categories:
                 continue
             markets = event.get("markets", [])
             is_partition = bool(event.get("mutually_exclusive")) and len(markets) > 1

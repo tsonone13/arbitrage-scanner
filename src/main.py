@@ -61,7 +61,23 @@ _CATEGORY_ALIASES: dict[str, dict[str, str]] = {
     "politics": {"kalshi_category": "Politics", "polymarket_tag_slug": "politics"},
     "elections": {"kalshi_category": "Elections", "polymarket_tag_slug": "elections"},
     "sports": {"kalshi_category": "Sports", "polymarket_tag_slug": "sports"},
-    "financials": {"kalshi_category": "Financials", "polymarket_tag_slug": "finance"},
+    # Kalshi's own category field isn't fully consistent between its
+    # /series and /events objects for the same underlying market family
+    # (confirmed directly, 2026-08-20: KXIPOANTHROPIC's series record says
+    # "Financials", but the actual event under it, KXIPOANTHROPIC-DATE,
+    # reports "Companies") -- and separately, Kalshi has real financially-
+    # relevant content genuinely filed under "Companies" (IPOs, major exec/
+    # board changes) that Polymarket's broader "finance" tag also covers,
+    # with no separate Polymarket tag to split it out even if we wanted to.
+    # Checked "Companies" isn't just noise before including it: of the 79
+    # events actually tagged "Companies" (not the much larger, misleading
+    # 529 at the /series level -- most of those series' individual events
+    # get tagged something else), only ~2 are Kalshi-exclusive KPI/spend
+    # trackers with no realistic Polymarket counterpart; the rest are
+    # exactly the kind of named-company-event content worth matching
+    # against. kalshi_category is a tuple here specifically so
+    # KalshiImporter fetches both -- see its own docstring.
+    "financials": {"kalshi_category": ("Financials", "Companies"), "polymarket_tag_slug": "finance"},
     "economics": {"kalshi_category": "Economics", "polymarket_tag_slug": "economy"},
     "tech": {"kalshi_category": "Science and Technology", "polymarket_tag_slug": "tech"},
     "climate": {"kalshi_category": "Climate and Weather", "polymarket_tag_slug": "weather"},

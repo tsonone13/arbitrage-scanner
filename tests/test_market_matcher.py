@@ -196,6 +196,45 @@ class TestFindTitleCandidates(unittest.TestCase):
         self.assertEqual(find_title_candidates([k, p]), [])
         self.assertEqual(find_title_candidates([k, p], min_similarity=0.4), [(k, p)])
 
+    def test_custom_min_shared_tokens_threshold_is_honored(self):
+        # k = {zeta, corp, announce, merger} (4)
+        # p = {zeta, corp, q3, earnings, report} (5)
+        # shared = {zeta, corp} = 2 (< default _MIN_SHARED_TOKENS of 3, so
+        # excluded by default). ratio = 2/min(4,5) = 0.5, which already
+        # clears the default min_similarity on its own -- deliberately
+        # constructed this way so lowering min_shared_tokens is the ONLY
+        # thing that changes the outcome, not a side effect of also
+        # needing a looser min_similarity.
+        k = make_price("Kalshi", "K1", "Will Zeta Corp announce merger?")
+        p = make_price("Polymarket", "P1", "Zeta Corp Q3 Earnings Report")
+        self.assertEqual(find_title_candidates([k, p]), [])
+        self.assertEqual(find_title_candidates([k, p], min_shared_tokens=2), [(k, p)])
+
+    def test_real_missed_match_needs_both_thresholds_lowered(self):
+        """Regression/documentation test for a real false negative found
+        2026-08-20: "When will Anthropic officially announce an IPO?"
+        (Kalshi) and "Will Anthropic IPO by September 15, 2026?"
+        (Polymarket) are the same real question, but share only 2 tokens
+        ("anthropic", "ipo") -- everything else is phrasing filler on the
+        Kalshi side or the specific date on the Polymarket side, not new
+        subject matter. shared=2 (< default 3) AND ratio=2/5=0.4 (< default
+        0.5) -- unlike the synthetic test above, this real pair needs BOTH
+        thresholds lowered to be found, confirming this is a genuine,
+        currently-uncaught category of false negative, not a one-parameter
+        fix. See find_title_candidates' own min_shared_tokens comment for
+        why no reliable way was found to catch this case without also
+        reopening the false positives _MIN_SHARED_TOKENS=3 fixed (a shared
+        two-word proper noun is the same "2 shared tokens, rest differs"
+        shape as this genuine match).
+        """
+        k = make_price("Kalshi", "K1", "When will Anthropic officially announce an IPO?")
+        p = make_price("Polymarket", "P1", "Will Anthropic IPO by September 15, 2026?")
+        self.assertEqual(find_title_candidates([k, p]), [])
+        self.assertEqual(find_title_candidates([k, p], min_shared_tokens=2), [])  # ratio still fails
+        self.assertEqual(
+            find_title_candidates([k, p], min_shared_tokens=2, min_similarity=0.4), [(k, p)]
+        )
+
     def test_shared_proper_noun_alone_does_not_produce_a_candidate(self):
         """Regression test for a real false positive found on live sports
         data (2026-08-20): a football hosting-announcement question and an

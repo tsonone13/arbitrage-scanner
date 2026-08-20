@@ -232,15 +232,26 @@ added. Currently verified:
 | `politics` | Politics | politics |
 | `elections` | Elections | elections |
 | `sports` | Sports | sports |
-| `financials` | Financials | finance |
+| `financials` | Financials, Companies | finance |
 | `economics` | Economics | economy |
 | `tech` | Science and Technology | tech |
 | `climate` | Climate and Weather | weather |
 
-Kalshi's "Mentions" and "Companies" categories are deliberately left out:
-Polymarket has no single equivalent tag for "Mentions" (it fragments into
-dozens of specific tags like "Trump Speech Mentions" instead of one general
-one), so there's nothing to verify a pairing against yet.
+`financials` is the one alias with two Kalshi categories, not one (confirmed
+necessary 2026-08-20 by a real missed match: "When will Anthropic officially
+announce an IPO?" is filed under Kalshi's event-level "Companies", not
+"Financials", even though its own *series* record says "Financials" — Kalshi
+isn't fully consistent between the two. "Companies" also genuinely has
+matchable content Polymarket's broader `finance` tag covers on its own side
+— IPOs, major exec/board changes — checked before including it: of the ~79
+events actually tagged "Companies" at the event level (not the much larger,
+misleading ~500 at the series level), only a couple are Kalshi-exclusive KPI/
+spend trackers with no realistic counterpart.
+
+Kalshi's "Mentions" category is still left out: Polymarket has no single
+equivalent tag for it (it fragments into dozens of specific tags like "Trump
+Speech Mentions" instead of one general one), so there's nothing to verify a
+pairing against yet.
 
 Narrowing scope like this also makes it practical to search for *new*
 crosswalk candidates instead of only checking the verified crosswalk:
@@ -401,6 +412,7 @@ python src/main.py --source mock --min-edge 0.005 --top 10 --bankroll 10000
 python src/main.py --source csv
 python src/main.py --source live --min-edge -1
 python src/main.py --source live --category elections --min-edge -1
+python src/main.py --source live --category sports --full-depth --min-edge -1
 ```
 
 The first four are near-instant (well under a second for mock/csv/live, live
@@ -409,6 +421,26 @@ is fast). Only `--category` runs take real time, since they have to list an
 entire category before pricing anything: `--category elections` takes
 roughly 15-20s, mostly Kalshi's pagination cost, which no category filter
 avoids.
+
+### Running the full, uncapped version
+
+The public website (whatever's linked as the live demo) intentionally scans
+at reduced depth — sized to stay inside a 512MB host, not this project's
+real limit. Locally, on your own machine, that ceiling doesn't apply. Add
+`--full-depth` to any single-category live scan to page that category to
+each venue's actual end instead of a fixed cap:
+
+```bash
+python src/main.py --source live --category sports --full-depth --min-edge -1
+```
+
+This is real time and real memory, not a free upgrade — confirmed directly
+(2026-08-20), Kalshi's whole catalog is ~11,000 events and Sports alone is
+~54,000 active markets, so a full-depth run on a big category is minutes,
+not seconds, and holds correspondingly more in memory while it runs. The
+website's own code never triggers this — `load_prices_for_category()`'s
+`full_depth` parameter defaults to `False`, and the site's call site never
+overrides it, so this is only ever something you run yourself, on purpose.
 
 `--min-edge -1` is worth using on any live run: it shows every candidate
 trade actually compared, not just ones clearing a threshold, which is the
