@@ -18,18 +18,17 @@ something arb_engine.py treats as tradeable (see arb_engine.py's cross-venue
 guard for why that specifically failed once already).
 
 find_title_candidates() below is a different, lower-stakes job: surfacing
-*leads* worth pricing and showing a human as explicitly unverified (never
-fed into match_markets()/the crosswalk). Since nothing here ever grants
-trust, it's fuzzy on purpose -- token-overlap similarity, not exact
-equality -- so it can catch two venues asking the same real question in
-different words (e.g. "Fed Decision Sep 2026 Meeting: Hike 50+ bps" vs.
-"Will the Fed raise rates by 50+ bps at the September 2026 meeting?"),
-which exact-title matching structurally cannot. A wider net here costs
-nothing in trust (every result still goes through
-opportunity_view.py's UNVERIFIED_MATCH/UNVERIFIED_NO_EDGE relabeling and
-still faces arb_engine's own close-date guard), only in how many leads get
-shown -- and improving future work using outcome names / resolution source
-agreement / contract wording remains open, same as before.
+*leads* worth pricing, not verified pairs (never fed into match_markets()/
+the crosswalk). Since nothing here ever grants trust, it's fuzzy on
+purpose -- token-overlap similarity, not exact equality -- so it can catch
+two venues asking the same real question in different words (e.g. "Fed
+Decision Sep 2026 Meeting: Hike 50+ bps" vs. "Will the Fed raise rates by
+50+ bps at the September 2026 meeting?"), which exact-title matching
+structurally cannot. A wider net here costs nothing in trust -- every
+result still faces arb_engine's own close-date guard via
+score_title_candidate() below, and both the website and the CLI display
+candidate-derived results as leads for manual review, not verified
+opportunities -- only in how many leads get shown.
 """
 
 import csv
@@ -37,6 +36,7 @@ import re
 from collections import defaultdict
 from dataclasses import replace
 
+from arb_engine import ArbOpportunity, check_binary_cross_venue_arbs
 from models import MarketGroup, NormalizedPrice
 
 
@@ -116,6 +116,38 @@ def apply_market_pairs(
     return result
 
 
+def score_title_candidate(
+    kalshi_row: NormalizedPrice, poly_row: NormalizedPrice, fee_buffer: float, min_edge: float
+) -> list[ArbOpportunity]:
+    """Run a title-matched candidate pair through the real, unmodified
+    arb_engine math -- the exact same math every crosswalk market uses.
+    Shared by both the website (opportunity_view.py) and the CLI (main.py)
+    -- moved here specifically because opportunity_view.py imports FROM
+    main.py, so main.py can't import this back from opportunity_view.py
+    without a circular import; this module has no such dependency on
+    either.
+
+    Builds a MarketGroup that exists only in memory for this one
+    computation (never written to data/market_pairs.csv, never cached):
+    same canonical_market_name and outcome_name="Yes" standardization
+    apply_market_pairs() uses for real crosswalk pairs, so
+    check_binary_cross_venue_arbs() sees the identical shape it always
+    does -- including its own close-date guard, which a title match alone
+    does nothing to bypass.
+    """
+    shared_name = kalshi_row.raw_market_name
+    synth_kalshi = replace(kalshi_row, canonical_market_name=shared_name, outcome_name="Yes")
+    synth_poly = replace(poly_row, canonical_market_name=shared_name, outcome_name="Yes")
+    group = MarketGroup(
+        canonical_market_name=shared_name,
+        market_type="binary",
+        outcomes=["Yes"],
+        prices=[synth_kalshi, synth_poly],
+        match_confidence=0.0,
+    )
+    return check_binary_cross_venue_arbs(group, fee_buffer, min_edge)
+
+
 # Universal English function words only -- no domain words (e.g. "win"),
 # since those still carry real signal and hand-tuning a domain stoplist
 # risks quietly cutting precision for no clearly justified gain.
@@ -184,6 +216,38 @@ _MIN_SIMILARITY = 0.5
 # (a repeated boilerplate phrase, not real content overlap) without
 # touching genuinely rare, distinguishing words like "fed"/"bps".
 _MAX_COMMON_TOKEN_DF = 50
+
+# A deliberately small, curated exception to _MIN_SHARED_TOKENS, not a
+# general lowering of it. Found and verified 2026-08-20 while looking into
+# why a financials scan (9,311 markets listed) surfaced only 9 candidates:
+# most of that gap is real (Kalshi's financials/companies catalog is
+# dominated by product types -- KPI trackers, GPU-rental hourly pricing,
+# credit-card-spend indices -- that Polymarket simply doesn't offer, and
+# Kalshi has no single-stock price-threshold markets at all, confirmed by
+# searching its entire catalog), but a real, systematic recall gap sat
+# underneath that: every "will/when will $COMPANY IPO" pair tested (6/6 --
+# Databricks, Perplexity, Shein, Waymo, Canva, Bloomberg, plus the original
+# Anthropic case) shares only {company, "ipo"} = 2 tokens, below the
+# default floor, and several also fail min_similarity outright (ratio as
+# low as 0.40). A shared entity name plus a specific, unambiguous event
+# word like "ipo" is a much stronger signal than a shared entity name
+# alone (the San Francisco/Tampa Bay proper-noun collisions _MIN_SHARED_
+# TOKENS=3 was raised to fix never had a second token this specific) --
+# but it isn't risk-free on its own: "Which bank will lead Anthropic's
+# IPO?" (a question about the underwriter) shares the identical {anthropic,
+# ipo} / 0.40 ratio with "Will Anthropic IPO by September 15, 2026?" (a
+# question about timing) -- a real collision with the exact shape of the
+# genuine matches, not distinguishable by token overlap alone. The
+# _starts_with_interrogative guard below closes that specific gap (checked
+# directly: none of the 6 genuine matches trip it, both "which bank"
+# variants do) without touching the general default, which stays at 3.
+_STRONG_MATCH_TOKENS = frozenset({"ipo"})
+_INTERROGATIVE_LEADS = frozenset({"which", "who", "whose", "what"})
+
+
+def _starts_with_interrogative(raw_title: str) -> bool:
+    words = raw_title.strip().split()
+    return bool(words) and words[0].lower().strip("?.,\"'") in _INTERROGATIVE_LEADS
 
 
 def _tokenize(text: str) -> frozenset[str]:
@@ -316,11 +380,26 @@ def find_title_candidates(
             # sets; the ratio passed to _token_overlap uses the FULL
             # original token sets -- see that function's docstring for why
             # the denominator must not be the already-filtered length.
-            shared = len(k_sig & poly_significant[i])
-            if shared < min_shared_tokens:
-                continue
-            if _token_overlap(k_tokens, p_tokens, common_tokens) < min_similarity:
-                continue
+            shared_tokens = k_sig & poly_significant[i]
+            shared = len(shared_tokens)
+            # See _STRONG_MATCH_TOKENS' own comment for the full case this
+            # exists for (the "$COMPANY IPO" family) and the collision risk
+            # it deliberately guards against ("which bank leads the IPO"
+            # sharing the identical shape as a genuine timing question).
+            # Bypasses BOTH gates below, not just the count -- several of
+            # the genuine matches this targets also fail min_similarity on
+            # their own (ratio as low as 0.40).
+            strong_match = (
+                shared >= 2
+                and shared_tokens & _STRONG_MATCH_TOKENS
+                and not _starts_with_interrogative(kalshi_price.raw_market_name)
+                and not _starts_with_interrogative(poly_price.raw_market_name)
+            )
+            if not strong_match:
+                if shared < min_shared_tokens:
+                    continue
+                if _token_overlap(k_tokens, p_tokens, common_tokens) < min_similarity:
+                    continue
             seen_pairs.add(pair_key)
             candidates.append((kalshi_price, poly_price))
     return candidates

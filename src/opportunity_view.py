@@ -12,15 +12,14 @@ and never touches arb_engine.py's math.
 """
 
 import threading
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from arb_engine import ArbOpportunity, _close_dates_conflict, check_binary_cross_venue_arbs
 from categories import CATEGORY_LABELS, CATEGORY_ORDER, load_market_categories
 from main import load_prices_fast, load_prices_for_category
-from market_matcher import apply_market_pairs, load_market_pairs, match_markets
-from models import MarketGroup, NormalizedPrice
+from market_matcher import apply_market_pairs, load_market_pairs, match_markets, score_title_candidate
+from models import NormalizedPrice
 from opportunity_ranker import rank_opportunities
 from slippage import opportunity_sizing
 from ttl_cache import TTLCache
@@ -276,33 +275,6 @@ def build_scan_result() -> dict:
     }
 
 
-def _score_candidate(
-    kalshi_row: NormalizedPrice, poly_row: NormalizedPrice
-) -> list[ArbOpportunity]:
-    """Run a title-matched candidate pair through the real, unmodified
-    arb_engine math -- the exact same math every crosswalk market on the
-    site uses.
-
-    Builds a MarketGroup that exists only in memory for this one
-    computation (never written to data/market_pairs.csv, never cached):
-    same canonical_market_name and outcome_name="Yes" standardization
-    apply_market_pairs() uses for real crosswalk pairs, so
-    check_binary_cross_venue_arbs() sees the identical shape it always
-    does.
-    """
-    shared_name = kalshi_row.raw_market_name
-    synth_kalshi = replace(kalshi_row, canonical_market_name=shared_name, outcome_name="Yes")
-    synth_poly = replace(poly_row, canonical_market_name=shared_name, outcome_name="Yes")
-    group = MarketGroup(
-        canonical_market_name=shared_name,
-        market_type="binary",
-        outcomes=["Yes"],
-        prices=[synth_kalshi, synth_poly],
-        match_confidence=0.0,
-    )
-    return check_binary_cross_venue_arbs(group, _FEE_BUFFER, _MIN_EDGE)
-
-
 _MAX_SCAN_CARDS_SHOWN = 3
 
 # POST /api/scan/{category} has no auth and no client-side-only protection
@@ -403,7 +375,7 @@ def _scan_category_impl(category: str) -> dict:
         if priced_kalshi is None or priced_poly is None:
             continue  # no live price for one side this scan -- skip, don't guess
 
-        opps = _score_candidate(priced_kalshi, priced_poly)
+        opps = score_title_candidate(priced_kalshi, priced_poly, _FEE_BUFFER, _MIN_EDGE)
         if not opps:
             continue  # e.g. close-date guard blocked it, or a leg had no ask
 

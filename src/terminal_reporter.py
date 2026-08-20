@@ -147,16 +147,42 @@ def print_no_opportunities() -> None:
     console.print("[yellow]No opportunities passed the current filters.[/yellow]")
 
 
+def print_candidate_opportunities_header(count: int) -> None:
+    """Printed once, before the panels for candidate-derived opportunities
+    (see main.py's score_candidates()) -- these went through the exact same
+    arb_engine math and --min-edge/--fee-buffer filters as every crosswalk
+    opportunity below, so they're real, live-priced numbers, not a title
+    guess. What makes them different -- and still worth a clear one-time
+    disclaimer rather than blending them in silently -- is that the pairing
+    itself is a fuzzy title match, not a human-verified crosswalk entry
+    (each panel's own "Match confidence: 0.00" reflects this too). Read
+    both venues' actual resolution rules before trusting one enough to
+    trade it or promote it into data/market_pairs.csv.
+    """
+    console.print(
+        f"[bold cyan]{count} candidate-match opportunity(ies) found[/bold cyan] "
+        "[dim](priced and filtered the same as crosswalk opportunities above, but the "
+        "pairing itself is an unverified title match, not a human-verified crosswalk "
+        "entry -- read both venues' actual resolution rules before trusting one)[/dim]"
+    )
+
+
 def print_candidate_matches(candidates: list[tuple[NormalizedPrice, NormalizedPrice]]) -> None:
-    """Leads for the crosswalk, not opportunities -- these are never priced
-    against each other or run through the arb engine, just titles that
-    matched after light normalization. Deliberately plain (no green/red,
-    no "FOUND"): the whole point is that these are unverified.
+    """Leads for the crosswalk that didn't clear into a priced opportunity
+    above (no live price on one side, blocked by the close-date guard, or
+    priced but not profitable enough for --min-edge) -- title matches
+    only, deliberately plain (no green/red, no "FOUND"): the whole point
+    is that these are unverified AND unpriced. Candidates that did price
+    into a real opportunity are shown by print_candidate_opportunities_header
+    instead, not duplicated here.
     """
     if not candidates:
         return
     table = Table(
-        title=f"{len(candidates)} unverified title match(es) -- review before adding to data/market_pairs.csv",
+        title=(
+            f"{len(candidates)} unverified title match(es) with no priced opportunity -- "
+            "review before adding to data/market_pairs.csv"
+        ),
         show_header=True, header_style="bold cyan",
     )
     table.add_column("Kalshi")
@@ -168,7 +194,10 @@ def print_candidate_matches(candidates: list[tuple[NormalizedPrice, NormalizedPr
         table.add_row(kalshi.raw_market_name, kalshi.market_id, poly.raw_market_name, poly.market_id)
     console.print(table)
     console.print(
-        "[dim]These are not opportunities -- no prices were compared. A matching "
-        "title is not proof of the same bet (see README). Read both venues' "
-        "actual resolution rules before adding a pair to the crosswalk.[/dim]\n"
+        "[dim]No priced opportunity for these -- either a live price was missing on one "
+        "side, the close-date guard blocked it, or it didn't clear --min-edge (try "
+        "--min-edge -1 to see every computed edge, not just profitable ones). A matching "
+        "title is still not proof of the same bet (see README) even for the ones that did "
+        "price -- read both venues' actual resolution rules before adding a pair to the "
+        "crosswalk.[/dim]\n"
     )

@@ -30,7 +30,13 @@ from importers.csv_importer import CsvImporter
 from importers.kalshi_importer import KalshiImporter
 from importers.mock_importer import load_all_mock_prices
 from importers.polymarket_importer import PolymarketImporter
-from market_matcher import apply_market_pairs, find_title_candidates, load_market_pairs, match_markets
+from market_matcher import (
+    apply_market_pairs,
+    find_title_candidates,
+    load_market_pairs,
+    match_markets,
+    score_title_candidate,
+)
 from models import ArbOpportunity, MarketGroup, NormalizedPrice
 from opportunity_ranker import rank_opportunities
 from slippage import opportunity_sizing
@@ -389,6 +395,57 @@ def run_checks(
     return opportunities
 
 
+def score_candidates(
+    candidates: list[tuple[NormalizedPrice, NormalizedPrice]],
+    prices_by_key: dict[tuple[str, str], NormalizedPrice],
+    fee_buffer: float,
+    min_edge: float,
+) -> tuple[list[ArbOpportunity], list[tuple[NormalizedPrice, NormalizedPrice]]]:
+    """Price every title-matched candidate through the real, unmodified
+    arb_engine math (score_title_candidate, shared with the website) and
+    split them into (opportunities that cleared fee_buffer/min_edge,
+    candidates that didn't -- no live price on one side, blocked by the
+    close-date guard, or genuinely not profitable enough).
+
+    Previously the CLI only ever showed candidates as a bare title table --
+    find_title_candidates() found leads, but nothing priced them, unlike
+    the website's scan feature (opportunity_view.py's own use of
+    score_title_candidate). Confirmed real 2026-08-20 running a full-depth
+    sports scan: 1,855 candidates including the entire F1 Drivers'
+    Championship field (11+ genuine matches, one per driver), all shown as
+    bare titles with no way to see whether any were actually profitable
+    without looking each one up by hand.
+
+    candidates can contain the same (kalshi, poly) pair more than once
+    (find_title_candidates() already dedupes by exact pair, but a pair can
+    still appear via different token-blocking paths in rare cases) -- the
+    same seen-pair dedup opportunity_view.py's scan uses.
+    """
+    priced_opportunities: list[ArbOpportunity] = []
+    unpriced_candidates: list[tuple[NormalizedPrice, NormalizedPrice]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for a, b in candidates:
+        kalshi_stub = a if a.venue == "Kalshi" else b
+        poly_stub = a if a.venue == "Polymarket" else b
+        pair_key = (kalshi_stub.market_id, poly_stub.market_id)
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
+
+        priced_kalshi = prices_by_key.get(("Kalshi", kalshi_stub.market_id))
+        priced_poly = prices_by_key.get(("Polymarket", poly_stub.market_id))
+        if priced_kalshi is None or priced_poly is None:
+            unpriced_candidates.append((a, b))  # no live price for one side -- skip, don't guess
+            continue
+
+        opps = score_title_candidate(priced_kalshi, priced_poly, fee_buffer, min_edge)
+        if not opps:
+            unpriced_candidates.append((a, b))  # e.g. close-date guard blocked it, or no edge
+            continue
+        priced_opportunities.extend(opps)
+    return priced_opportunities, unpriced_candidates
+
+
 def main() -> None:
     args = parse_args()
     if args.top <= 0:
@@ -453,7 +510,20 @@ def main() -> None:
             terminal_reporter.print_opportunity(opp, args.bankroll, estimate, sizing)
         terminal_reporter.print_top_n_notice(len(top), len(ranked))
 
-    terminal_reporter.print_candidate_matches(candidates)
+    candidate_opportunities, unpriced_candidates = score_candidates(
+        candidates, prices_by_key, args.fee_buffer, args.min_edge
+    )
+    candidate_ranked = rank_opportunities(candidate_opportunities)
+    if candidate_ranked:
+        terminal_reporter.print_candidate_opportunities_header(len(candidate_ranked))
+        candidate_top = candidate_ranked[: args.top]
+        for opp in candidate_top:
+            estimate = estimate_profit(args.bankroll, opp.total_cost, opp.guaranteed_payout)
+            sizing = opportunity_sizing(opp, prices_by_key)
+            terminal_reporter.print_opportunity(opp, args.bankroll, estimate, sizing)
+        terminal_reporter.print_top_n_notice(len(candidate_top), len(candidate_ranked))
+
+    terminal_reporter.print_candidate_matches(unpriced_candidates)
 
 
 if __name__ == "__main__":

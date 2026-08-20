@@ -210,30 +210,33 @@ class TestFindTitleCandidates(unittest.TestCase):
         self.assertEqual(find_title_candidates([k, p]), [])
         self.assertEqual(find_title_candidates([k, p], min_shared_tokens=2), [(k, p)])
 
-    def test_real_missed_match_needs_both_thresholds_lowered(self):
-        """Regression/documentation test for a real false negative found
-        2026-08-20: "When will Anthropic officially announce an IPO?"
-        (Kalshi) and "Will Anthropic IPO by September 15, 2026?"
-        (Polymarket) are the same real question, but share only 2 tokens
-        ("anthropic", "ipo") -- everything else is phrasing filler on the
-        Kalshi side or the specific date on the Polymarket side, not new
-        subject matter. shared=2 (< default 3) AND ratio=2/5=0.4 (< default
-        0.5) -- unlike the synthetic test above, this real pair needs BOTH
-        thresholds lowered to be found, confirming this is a genuine,
-        currently-uncaught category of false negative, not a one-parameter
-        fix. See find_title_candidates' own min_shared_tokens comment for
-        why no reliable way was found to catch this case without also
-        reopening the false positives _MIN_SHARED_TOKENS=3 fixed (a shared
-        two-word proper noun is the same "2 shared tokens, rest differs"
-        shape as this genuine match).
+    def test_real_ipo_pair_now_found_by_default_via_strong_match(self):
+        """Regression test for a real false negative found 2026-08-20:
+        "When will Anthropic officially announce an IPO?" (Kalshi) and
+        "Will Anthropic IPO by September 15, 2026?" (Polymarket) are the
+        same real question, but share only 2 tokens ("anthropic", "ipo")
+        -- below the default _MIN_SHARED_TOKENS of 3, and their overlap
+        ratio (0.4) is also below the default _MIN_SIMILARITY (0.5). Fixed
+        by _STRONG_MATCH_TOKENS -- "ipo" is specific and unambiguous enough
+        that 2 shared tokens including it is trustworthy on its own, unlike
+        a bare shared proper noun (see the San Francisco test above). Now
+        found with the plain default call, no overrides needed.
         """
         k = make_price("Kalshi", "K1", "When will Anthropic officially announce an IPO?")
         p = make_price("Polymarket", "P1", "Will Anthropic IPO by September 15, 2026?")
+        self.assertEqual(find_title_candidates([k, p]), [(k, p)])
+
+    def test_strong_match_does_not_bridge_a_different_sub_question(self):
+        """The real collision risk _STRONG_MATCH_TOKENS' own comment
+        describes: "Which bank will lead Anthropic's IPO?" (a question
+        about the underwriter) shares the identical {anthropic, ipo} / 0.4
+        shape as the genuine timing question above -- token overlap alone
+        can't tell them apart. The interrogative-lead guard
+        (_starts_with_interrogative) is what actually blocks this one.
+        """
+        k = make_price("Kalshi", "K1", "Which bank will lead Anthropic's IPO?")
+        p = make_price("Polymarket", "P1", "Will Anthropic IPO by September 15, 2026?")
         self.assertEqual(find_title_candidates([k, p]), [])
-        self.assertEqual(find_title_candidates([k, p], min_shared_tokens=2), [])  # ratio still fails
-        self.assertEqual(
-            find_title_candidates([k, p], min_shared_tokens=2, min_similarity=0.4), [(k, p)]
-        )
 
     def test_shared_proper_noun_alone_does_not_produce_a_candidate(self):
         """Regression test for a real false positive found on live sports

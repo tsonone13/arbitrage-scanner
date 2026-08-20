@@ -299,10 +299,21 @@ data, not a one-shot design:
   full data, including why 4 was tried and rejected (it cuts real matches
   too, since most genuine "name + one context word" pairs only clear 3).
 
-A title match here is still a **lead, not a verified pair**. The website
-shows it with the same `PASS` / `FEE_ADJUSTED_NO_EDGE` / `NO_EDGE`
-vocabulary as a crosswalk market rather than a separate "unverified"
-badge — a deliberate product decision, with a sitewide disclaimer instead
+A title match here is still a **lead, not a verified pair**. Both the
+website and the CLI (`main.py`'s `score_candidates()`, added 2026-08-20 —
+previously the CLI only ever showed candidates as a bare title table, with
+no way to see whether any were actually profitable without looking each
+one up by hand) run every candidate through the same real, unmodified
+arb_engine math and the same `--min-edge`/`--fee-buffer` filters as a
+crosswalk market, then split the results: candidates that price into a
+real opportunity get shown with full pricing (each panel's own "Match
+confidence: 0.00" is the one thing that still marks it as unverified);
+candidates that don't — no live price on one side, blocked by the
+close-date guard, or genuinely not profitable — fall back to the bare
+title table for manual review. The website shows it with the same `PASS`
+/ `FEE_ADJUSTED_NO_EDGE` / `NO_EDGE` vocabulary as a crosswalk market
+rather than a separate "unverified" badge — a deliberate product
+decision, with a sitewide disclaimer instead
 of a per-card caveat — but it still needs the same manual check (read
 both venues' actual resolution rules and dates) before it's safe to
 promote into `data/market_pairs.csv`.

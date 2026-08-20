@@ -25,8 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import opportunity_view  # noqa: E402
 from arb_engine import check_binary_cross_venue_arbs  # noqa: E402
+from market_matcher import score_title_candidate  # noqa: E402
 from models import MarketGroup, NormalizedPrice  # noqa: E402
-from opportunity_view import _STATUS_RANK, _real_fee_status, _score_candidate, _shape_route  # noqa: E402
+from opportunity_view import _STATUS_RANK, _real_fee_status, _shape_route  # noqa: E402
 
 _FEE_BUFFER = 0.003
 
@@ -196,7 +197,7 @@ class TestScanCandidateBestStatus(unittest.TestCase):
     """
 
     def test_pass_route_wins_over_no_edge_route_from_same_candidate(self):
-        """Kalshi/Polymarket both quote YES and NO, so _score_candidate
+        """Kalshi/Polymarket both quote YES and NO, so score_title_candidate
         produces 2 routes:
           Route A (buy YES Kalshi 0.10 / NO Polymarket 0.85): total_cost=
           0.95, same numbers as test_flat_buffer_pass_survives_real_fees
@@ -213,7 +214,7 @@ class TestScanCandidateBestStatus(unittest.TestCase):
             "Polymarket", "P4", yes_ask=0.90, no_ask=0.85, size=10, taker_fee_rate=0.05
         )
 
-        opps = _score_candidate(kalshi, poly)
+        opps = score_title_candidate(kalshi, poly, _FEE_BUFFER, opportunity_view._MIN_EDGE)
         self.assertEqual(len(opps), 2)
 
         prices_by_key = {("Kalshi", "K4"): kalshi, ("Polymarket", "P4"): poly}
