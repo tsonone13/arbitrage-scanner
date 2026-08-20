@@ -5,7 +5,7 @@ prices across multiple venues (currently live Kalshi and Polymarket, plus
 mock/CSV fixtures), normalizes them to a common bid/ask format, and surfaces
 trades where a guaranteed $1 payout can be bought for less than $1 — in your
 terminal, or in a read-only website (FastAPI backend, static HTML/JS
-frontend, same underlying pipeline; see "How to run the website" below).
+frontend, same underlying pipeline).
 
 This is v1. It does **not** place trades and does **not** use any API key
 for its price data (Kalshi and Polymarket are both read over public,
@@ -363,8 +363,7 @@ APIs before writing the importers:
 
 No account, key, or secret is required to run `--source kalshi`,
 `--source polymarket`, or `--source live`. That's intentional, not just a
-v1 shortcut: the public-facing website (see "How to run the website" below,
-and "Deploying" for making it public) runs on the exact same keyless read
+v1 shortcut: the public-facing website runs on the exact same keyless read
 path, so there was never anything sensitive that needed to be stripped out
 before making it public.
 
@@ -409,119 +408,3 @@ nothing to show.
 | `--fee-buffer` | float | 0.003 | Flat cost/slippage buffer subtracted from gross edge before filtering. |
 | `--top` | int | 20 | Max opportunities printed (the engine still scans everything internally). |
 | `--bankroll` | float | 1000 | Bankroll used for the "estimated profit" display on each opportunity. |
-
-## How to run the website
-
-```bash
-cd "$HOME/Desktop/Quant Project Work/Arbitrage Scanner"
-source .venv/bin/activate   # same venv as the CLI -- fastapi/uvicorn are in requirements.txt
-uvicorn src.api:app --reload
-```
-
-Then visit `http://localhost:8000`. It's the same pipeline as the CLI, just
-a different reporter: `src/api.py` is a thin FastAPI wrapper around
-`opportunity_view.py`, which reuses `main.py`'s loaders,
-`market_matcher.py`, `arb_engine.py`, and `slippage.py` completely
-unmodified. There are two distinct views per category tab, matching the
-CLI's "Two speeds, on purpose" split above:
-
-- **Compared** — the always-free, instant crosswalk view (`GET
-  /api/opportunities`, loaded automatically on page open and on RESCAN).
-  Mirrors the fast `--source live` path exactly: only markets already in
-  `data/market_pairs.csv` are shown, each as a real, verified `ARB FOUND` /
-  `NOT PROFITABLE AFTER FEES` / `NOT PROFITABLE` card (see "A flat fee
-  buffer is not the same as real fees" above for the middle one).
-- **SCAN FOR NEW MARKETS** — a per-category button (`POST
-  /api/scan/{category}`), mirroring `--category <name>` discovery mode:
-  lists that one category on both venues, fuzzy-matches and prices
-  candidates (see "Category-scoped scanning" above for how the matching
-  itself works), and shows real computed numbers honestly labeled
-  `UNVERIFIED MATCH` / `UNVERIFIED — NOT PROFITABLE` — never a trusted
-  `ARB FOUND`, since a title match alone is exactly the failure mode
-  described in "A title match is not a resolution-rules match" above. At
-  most the top 3 candidates are shown (by net edge): every profitable one
-  found, up to 3, or — only when none are profitable — the 3 closest
-  near-misses instead of dumping every candidate a scan turns up. The
-  headline size figure on every card, "Max Shares," is
-  `slippage.py`'s real, both-legs-and-real-fees-aware
-  `max_profitable_units()` — not raw order-book depth, which for any
-  Kalshi leg is top-of-book only and can't see the rest of Kalshi's book
-  (their public API doesn't expose it). Scanning one category never
-  touches any other tab's data, and takes the same ~15–25s a CLI
-  `--category` run does (Kalshi pagination is the dominant cost either
-  way). Candidates are never written to `data/market_pairs.csv`
-  automatically — promoting one to verified still means reading both
-  venues' actual resolution rules by hand, same as always.
-
-## Deploying
-
-The website has no login, no auth, and no paid dependency — `GET
-/api/opportunities` and `POST /api/scan/{category}` only call Kalshi's and
-Polymarket's free, keyless public APIs, same as the CLI. That makes it safe
-to put on a free host with zero ongoing cost. `render.yaml` at the repo root
-is a [Render](https://render.com) blueprint:
-
-```yaml
-services:
-  - type: web
-    name: arbitrage-engine
-    runtime: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn src.api:app --host 0.0.0.0 --port $PORT"
-```
-
-To deploy:
-
-1. Push this repo to GitHub (if not already).
-2. On Render: **New → Web Service**, connect the GitHub repo. Render
-   detects `render.yaml` and proposes the service above — confirm and
-   deploy.
-3. First build takes a few minutes; Render then gives you a free
-   `*.onrender.com` URL.
-
-The free tier sleeps after inactivity (~30s cold start on the next visit) —
-fine for a low-traffic personal tool, worth knowing if it feels slow on the
-first hit. `frontend/robots.txt` (served at `/robots.txt`) asks crawlers not
-to index the site; that's about search-engine visibility only, it doesn't
-restrict any human visitor — delete it if you want the site indexed instead.
-
-**Public-visibility tradeoff, worth stating plainly:** with no access gate,
-anyone with the URL can see live, thin-liquidity opportunities at the same
-time you do. That's a deliberate choice (see the project's own scope — read
--only, no trade execution, no credentials anywhere in the codebase to leak),
-not an oversight; add your own auth in front of it (e.g. Render's own
-password protection, or a reverse proxy) if that tradeoff stops being
-acceptable.
-
-## What future versions will add
-
-- Deeper Kalshi order-book depth (via an authenticated key) instead of
-  top-of-book only
-- Other prediction-market venue importers (PredictIt, ForecastEx, and
-  beyond) — both are already stubbed out as `VenueImporter` subclasses
-- Growing `data/market_pairs.csv` well beyond one verified event
-- Real NLP-assisted market matching: structured extraction of each market's
-  subject, resolution condition, threshold, and resolution date/source,
-  used as the actual match signal, with text/embedding similarity as a
-  cheap candidate generator rather than the final answer — and given real
-  money is on the line, a human-reviewable confirmation step before a new
-  cross-venue mapping is trusted, with confirmed pairs promoted into
-  `data/market_pairs.csv` the same way the Fed decision pair was added by
-  hand. The leading candidate for the extraction step is an LLM call
-  (Claude, structured output against a resolution-rules schema) against
-  each venue's actual rules text — evaluated and scoped, but intentionally
-  not built yet: unlike every other dependency in this project, it needs a
-  separate, self-funded API key (billed per call, not covered by a Claude
-  Code subscription), which is a real cost decision to make deliberately
-  rather than default into. The current `UNVERIFIED_MATCH` candidate-scan
-  feature (see "How to run the website" above) is the free, fuzzy-title-
-  match-only version of this same idea, shipped now precisely because it
-  needs no paid dependency.
-- Historical opportunity tracking
-- Alerts
-- Paper trading
-- Manual trade execution support
-
-None of the list above is built yet. This version is the terminal scanner
-plus a read-only website — no trade execution, no alerts, no history, on
-either surface.
