@@ -144,8 +144,8 @@ Kalshi and Polymarket phrase the same real-world bet differently, and
 nudging that with fuzzy text similarity is genuinely risky, not just noisy
 — two titles can look nearly identical while differing in resolution date,
 threshold, or resolution source, and a false match recommends a trade that
-isn't actually the same bet. So there's no fuzzy matching here. Two things
-happen instead:
+isn't actually the same bet. So **the trusted path never uses fuzzy
+matching.** Two things happen instead:
 
 1. **`data/market_pairs.csv` is a real, live lookup table**, not just
    documentation. It maps `(venue, market_id)` — a stable ID, never title
@@ -170,6 +170,16 @@ happen instead:
    match. Since Kalshi and Polymarket essentially never phrase the same
    question identically, this fallback alone finds ~0 cross-venue matches
    on live data — which is expected, not a bug (see below).
+
+Fuzzy matching *does* exist elsewhere in the codebase now — but only in
+`find_title_candidates()`, the separate function that generates unverified
+leads for manual review / the website's SCAN button, never in
+`match_markets()`/`apply_market_pairs()` above. Nothing that function finds
+is ever trusted, priced as a real arb, or written to
+`data/market_pairs.csv` automatically, so loosening its matching doesn't
+weaken the guarantee this section describes — see "Category-scoped
+scanning, and finding new candidates to verify" below for exactly how it
+works and why.
 
 Adding a new verified pair means: find a market on both venues, read (not
 skim) both platforms' actual resolution rules and dates, confirm they
@@ -207,17 +217,32 @@ verifying more:
 
 ### Why a live binary scan may still show few candidates outside a verified series
 
-Exact-title matching alone finds ~0 cross-venue matches on live data across
-most categories — confirmed directly: politics, financials, economics, and
-tech all returned zero title-candidates even scanning their full catalogs
-(13,000+ markets listed for politics alone). Elections, culture, and sports
-are the exception, because "Will [name] win [event]?" and "Will [movie] be
-delayed?" are template phrasings both venues happen to converge on; most
-other categories don't share a phrasing convention at all. That is the
-honest, structural shape of this problem, not a bug — growing real coverage
-means growing the verified crosswalk (or eventually building the NLP-assisted
-matching described in "Future versions"), not loosening the matching logic
-itself.
+The always-free default path (`match_markets()`, no `--category`) only
+ever compares markets already in `data/market_pairs.csv` by exact key, so
+outside the verified crosswalk it finds nothing — by design, not a bug;
+growing what it finds means growing the crosswalk.
+
+The separate `--category` discovery path (`find_title_candidates()`) used
+to be exact-title-only too, and confirmed directly that exact matching
+alone finds ~0 cross-venue candidates across most categories (politics,
+financials, and tech all returned zero even scanning full catalogs of
+13,000+ listed markets). Elections, culture, and sports were the
+exception, because "Will [name] win [event]?" and "Will [movie] be
+delayed?" are template phrasings both venues happen to converge on — most
+other categories just don't share a phrasing convention at all.
+`find_title_candidates()` is now fuzzy (see below), which meaningfully
+closes that gap for politics and tech specifically — e.g. it catches
+"Will the US acquire any part of Greenland before Jan 1, 2027?" against
+Polymarket's "Will the US acquire part of Greenland in 2026?", which
+exact matching structurally cannot. It does not fully close it for sports,
+financials, or climate: those categories ask many genuinely *different*
+real questions about the same athlete, company, or threshold band (e.g.
+"will Kirk Cousins retire" vs. "will Kirk Cousins start Week 1" both name
+the same player but aren't the same bet), which token-overlap similarity
+can't always tell apart from a genuine reworded match — a limitation of
+bag-of-words matching without real semantic understanding, not a bug
+either. See "Category-scoped scanning" below for exactly how the fuzzy
+matching works and where its false-positive tuning came from.
 
 ### Category-scoped scanning, and finding new candidates to verify
 
@@ -252,21 +277,42 @@ one), so there's nothing to verify a pairing against yet.
 
 Narrowing scope like this also makes it practical to search for *new*
 crosswalk candidates instead of only checking the verified crosswalk:
-`market_matcher.find_title_candidates()` buckets same-category prices by a
-lightly normalized title (lowercase, whitespace/punctuation only — no fuzzy
-or semantic matching) and surfaces cross-venue pairs that land in the same
-bucket. This is the "match cheaply first, then price" idea in practice:
-candidates are found from metadata alone, and only a verified pair ever
-gets treated as a real, priced opportunity. A title match here is a **lead,
-not a verified pair** — it's printed in a separate, deliberately plain
-table (never green "ARB FOUND"), and still needs the same manual check
-(read both venues' actual resolution rules and dates) before it's safe to
-add to `data/market_pairs.csv`. First real runs found leads like "Will
-Shrek 5 be delayed?" and nineteen individual "Will [contestant] win Big
-Brother Season 28?" markets under `--category culture` (differing only in
-capitalization), and 111 candidates under `--category elections` — election
-markets are phrased far more consistently across venues than most
-categories, for obvious reasons.
+`market_matcher.find_title_candidates()` tokenizes same-category titles
+(lowercase, strip common English stopwords, keep numbers) and surfaces
+cross-venue pairs whose *significant* tokens overlap enough — blocked via
+an inverted token index first (a full cross product is infeasible at real
+scale; a single category can list tens of thousands of rows per venue).
+This is fuzzy on purpose, unlike the trusted crosswalk path above: nothing
+it finds is ever trusted, priced as a real arb, or written to
+`data/market_pairs.csv` automatically, so a wider net here costs nothing
+in safety, only in how many leads show up for review.
+
+The exact scoring came from two rounds of real correction against live
+data, not a one-shot design:
+
+- A first cut (plain overlap-coefficient ratio) produced 129,044 candidates
+  on `--category sports` alone — nearly all false positives from titles
+  sharing one long boilerplate event phrase ("...the 2038 Men's FIFA World
+  Cup?" vs. "...host the final of the 2030 FIFA World Cup?", different
+  countries, different years). Fixed by treating any token whose document
+  frequency in that scan's batch exceeds 50 as a batch-local stopword,
+  excluded from both blocking and the similarity score's numerator.
+- That fix introduced a second bug: a short title built mostly from common
+  words (e.g. "Will Kirk Cousins announce his retirement before the
+  2026-27 NFL season?") reduces to almost nothing once common words are
+  stripped, so it scored a trivial, perfect match against *any* other
+  market naming the same athlete — "be the Raiders' Week 1 starting QB?"
+  scored 1.0 against it, a completely different real question. Fixed by
+  scoring the shared, non-common tokens against each title's *original*
+  length, not the post-filter remainder — confirmed this correctly drops
+  that pair to 0.33 while leaving a genuine reworded match (Fed-meeting
+  wording, see the code's `_MIN_SIMILARITY` comment) unaffected.
+
+A title match here is still a **lead, not a verified pair** — the website
+shows it as `UNVERIFIED MATCH` / `UNVERIFIED — NOT PROFITABLE` (see "How to
+run the website" below), never a trusted `ARB FOUND`, and it still needs
+the same manual check (read both venues' actual resolution rules and
+dates) before it's safe to promote into `data/market_pairs.csv`.
 
 ### Two speeds, on purpose
 
@@ -421,17 +467,25 @@ CLI's "Two speeds, on purpose" split above:
   buffer is not the same as real fees" above for the middle one).
 - **SCAN FOR NEW MARKETS** — a per-category button (`POST
   /api/scan/{category}`), mirroring `--category <name>` discovery mode:
-  lists that one category on both venues, prices every title-match
-  candidate, and shows real computed numbers honestly labeled
+  lists that one category on both venues, fuzzy-matches and prices
+  candidates (see "Category-scoped scanning" above for how the matching
+  itself works), and shows real computed numbers honestly labeled
   `UNVERIFIED MATCH` / `UNVERIFIED — NOT PROFITABLE` — never a trusted
   `ARB FOUND`, since a title match alone is exactly the failure mode
-  described in "A title match is not a resolution-rules match" above.
-  Scanning one category never touches any other tab's data, and takes the
-  same ~15–25s a CLI `--category` run does (Kalshi pagination is the
-  dominant cost either way). Candidates are never written to
-  `data/market_pairs.csv` automatically — promoting one to verified still
-  means reading both venues' actual resolution rules by hand, same as
-  always.
+  described in "A title match is not a resolution-rules match" above. At
+  most the top 3 candidates are shown (by net edge): every profitable one
+  found, up to 3, or — only when none are profitable — the 3 closest
+  near-misses instead of dumping every candidate a scan turns up. The
+  headline size figure on every card, "Max Shares," is
+  `slippage.py`'s real, both-legs-and-real-fees-aware
+  `max_profitable_units()` — not raw order-book depth, which for any
+  Kalshi leg is top-of-book only and can't see the rest of Kalshi's book
+  (their public API doesn't expose it). Scanning one category never
+  touches any other tab's data, and takes the same ~15–25s a CLI
+  `--category` run does (Kalshi pagination is the dominant cost either
+  way). Candidates are never written to `data/market_pairs.csv`
+  automatically — promoting one to verified still means reading both
+  venues' actual resolution rules by hand, same as always.
 
 ## Deploying
 
@@ -497,9 +551,9 @@ acceptable.
   separate, self-funded API key (billed per call, not covered by a Claude
   Code subscription), which is a real cost decision to make deliberately
   rather than default into. The current `UNVERIFIED_MATCH` candidate-scan
-  feature (see "How to run the website" above) is the free, title-match-only
-  version of this same idea, shipped now precisely because it needs no paid
-  dependency.
+  feature (see "How to run the website" above) is the free, fuzzy-title-
+  match-only version of this same idea, shipped now precisely because it
+  needs no paid dependency.
 - Historical opportunity tracking
 - Alerts
 - Paper trading
