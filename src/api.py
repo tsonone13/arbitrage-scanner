@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from categories import CATEGORY_ORDER  # noqa: E402
-from opportunity_view import build_category_scan_result, build_scan_result  # noqa: E402
+from opportunity_view import ScanBusyError, build_category_scan_result, build_scan_result  # noqa: E402
 
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -42,7 +42,10 @@ def scan_category(category: str) -> JSONResponse:
     """
     if category not in CATEGORY_ORDER:
         return JSONResponse({"error": f"unknown category: {category}"}, status_code=404)
-    return JSONResponse(build_category_scan_result(category))
+    try:
+        return JSONResponse(build_category_scan_result(category))
+    except ScanBusyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=429)
 
 
 @app.get("/")

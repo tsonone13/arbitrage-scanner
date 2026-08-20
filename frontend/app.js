@@ -231,7 +231,12 @@
     btn.type = "button";
     btn.className = "scan-btn";
     const scanning = scanningCategories.has(cat);
-    btn.disabled = scanning;
+    // Only one scan runs at a time, server-side (see opportunity_view.py's
+    // _scan_slot) -- disabling every category's button while ANY scan is
+    // in flight, not just this one, keeps the UI from ever offering a
+    // click the backend would just queue or reject anyway.
+    const anotherScanning = !scanning && scanningCategories.size > 0;
+    btn.disabled = scanning || anotherScanning;
     if (scanning) btn.classList.add("is-loading");
     btn.textContent = scanning ? "⟳ SCANNING…" : "⚲ SCAN FOR NEW MARKETS";
     btn.addEventListener("click", () => runCategoryScan(cat));
@@ -241,6 +246,8 @@
     const scan = scanResults[cat];
     if (scanning) {
       status.textContent = "Listing both venues' full catalogs and pricing new matches — usually 15–25s.";
+    } else if (anotherScanning) {
+      status.textContent = "Another category is scanning right now — only one scan runs at a time.";
     } else if (scan && !scan.error) {
       const t = new Date(scan.scanned_at);
       status.textContent =
@@ -259,6 +266,9 @@
     if (cat === activeCategory) renderCategory(cat, { animate: false });
     try {
       const res = await fetch(`/api/scan/${encodeURIComponent(cat)}`, { method: "POST" });
+      if (res.status === 429) {
+        throw new Error("another category was already scanning — try again in a moment");
+      }
       if (!res.ok) throw new Error(`server returned ${res.status}`);
       scanResults[cat] = await res.json();
     } catch (err) {
@@ -279,7 +289,15 @@
       // found once it finishes, not just the category the user is
       // currently looking at.
       renderTabs(state);
-      if (cat === activeCategory) renderCategory(cat, { animate: true });
+      // Unconditional, not "if (cat === activeCategory)": the category
+      // currently being viewed can be a DIFFERENT one from the scan that
+      // just finished (e.g. scan Culture, switch to Sports while it's
+      // still running -- Sports' own button is disabled the whole time
+      // any scan is in flight, see buildScanControl). Re-rendering only
+      // the just-finished category's own tab would leave the visible
+      // one's button stuck disabled until some unrelated re-render
+      // happened to fire.
+      renderCategory(activeCategory, { animate: true });
     }
   }
 

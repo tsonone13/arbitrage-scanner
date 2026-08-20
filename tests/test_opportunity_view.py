@@ -15,6 +15,8 @@ running the function under test and copying its output.
 """
 
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -261,6 +263,91 @@ class TestScanResultCaching(unittest.TestCase):
         self.assertEqual(tech_result, {"category": "tech"})
         self.assertEqual(sports_result, {"category": "sports"})
         self.assertEqual(mocked.call_count, 2)
+
+
+class TestScanSlotSerialization(unittest.TestCase):
+    """_build_category_scan_result_uncached() must serialize the actual
+    heavy work GLOBALLY across categories, not just per-category like
+    _scan_result_cache does. Confirmed as a real cause of an OOM crash on
+    the live 512MB deployment, not a hypothetical one (2026-08-20): two
+    different categories scanning at once each ran this whole fetch+match+
+    price pipeline in their own thread (FastAPI runs this sync route in a
+    threadpool), so their peak memory added together instead of one
+    waiting for the other.
+    """
+
+    def setUp(self):
+        opportunity_view._scan_result_cache._store.clear()
+
+    def tearDown(self):
+        # Defensive: a failed assertion mid-test could leave the
+        # module-level lock held, which would hang every test after it
+        # waiting on a lock nobody releases.
+        if opportunity_view._scan_slot.locked():
+            opportunity_view._scan_slot.release()
+
+    def test_two_categories_never_run_the_heavy_work_at_the_same_time(self):
+        concurrent_count = 0
+        max_concurrent = 0
+        count_lock = threading.Lock()
+
+        def slow_impl(category):
+            nonlocal concurrent_count, max_concurrent
+            with count_lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            time.sleep(0.05)
+            with count_lock:
+                concurrent_count -= 1
+            return {"category": category}
+
+        results = {}
+
+        def worker(cat):
+            results[cat] = opportunity_view._build_category_scan_result_uncached(cat)
+
+        with mock.patch.object(opportunity_view, "_scan_category_impl", side_effect=slow_impl):
+            t1 = threading.Thread(target=worker, args=("tech",))
+            t2 = threading.Thread(target=worker, args=("sports",))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        self.assertEqual(results, {"tech": {"category": "tech"}, "sports": {"category": "sports"}})
+        # The real bug this catches: without the lock, both threads' slow_impl
+        # calls would overlap and max_concurrent would hit 2.
+        self.assertEqual(max_concurrent, 1)
+
+    def test_second_scan_gives_up_with_busy_error_if_first_is_still_running(self):
+        # Hold the slot ourselves to simulate a scan already in progress,
+        # with a short timeout override so this test doesn't take the real
+        # 30s production value.
+        opportunity_view._scan_slot.acquire()
+        try:
+            with mock.patch.object(opportunity_view, "_SCAN_SLOT_TIMEOUT_SECONDS", 0.05):
+                with self.assertRaises(opportunity_view.ScanBusyError):
+                    opportunity_view._build_category_scan_result_uncached("tech")
+        finally:
+            opportunity_view._scan_slot.release()
+
+    def test_slot_is_released_after_a_normal_scan_so_the_next_one_can_run(self):
+        with mock.patch.object(
+            opportunity_view, "_scan_category_impl", side_effect=lambda cat: {"category": cat}
+        ):
+            opportunity_view._build_category_scan_result_uncached("tech")
+            # If the slot weren't released, this second call would block for
+            # the full timeout and raise ScanBusyError instead of returning.
+            result = opportunity_view._build_category_scan_result_uncached("sports")
+
+        self.assertEqual(result, {"category": "sports"})
+
+    def test_slot_is_released_even_if_the_scan_raises(self):
+        with mock.patch.object(opportunity_view, "_scan_category_impl", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                opportunity_view._build_category_scan_result_uncached("tech")
+
+        self.assertFalse(opportunity_view._scan_slot.locked())
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ only shapes their output for display -- it adds no new detection logic
 and never touches arb_engine.py's math.
 """
 
+import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -318,12 +319,46 @@ _MAX_SCAN_CARDS_SHOWN = 3
 _SCAN_RESULT_CACHE_TTL_SECONDS = 10
 _scan_result_cache = TTLCache(_SCAN_RESULT_CACHE_TTL_SECONDS, max_entries=4)
 
+# Confirmed as a real cause of the live 512MB deployment's OOM crash, not
+# just a theoretical one (2026-08-20): the cache above only serializes
+# repeat requests for the SAME category. FastAPI runs this module's sync
+# route in a threadpool, so two DIFFERENT categories scanning at once --
+# one user clicking Scan on category A, switching tabs, then clicking Scan
+# on category B before A finishes, or simply two different visitors doing
+# it at the same time on this public, unauthenticated endpoint -- run this
+# whole fetch+match+price pipeline in two threads simultaneously, and
+# their peak memory adds together instead of one waiting for the other.
+# This lock bounds the actual heavy work (not cache hits, which never
+# reach this point) to one category at a time, globally, regardless of
+# how many are requested concurrently. Bounded wait, not indefinite: a
+# second scan waits up to _SCAN_SLOT_TIMEOUT_SECONDS (covers a normal cold
+# scan's ~15-25s) for the first to finish, then gives up with a clear
+# busy signal rather than piling up blocked threads if something's
+# unusually slow.
+_SCAN_SLOT_TIMEOUT_SECONDS = 30
+_scan_slot = threading.Lock()
+
+
+class ScanBusyError(RuntimeError):
+    """Another category's scan is already using the one scan slot."""
+
 
 def build_category_scan_result(category: str) -> dict:
     return _scan_result_cache.get_or_fetch(category, lambda: _build_category_scan_result_uncached(category))
 
 
 def _build_category_scan_result_uncached(category: str) -> dict:
+    if not _scan_slot.acquire(timeout=_SCAN_SLOT_TIMEOUT_SECONDS):
+        raise ScanBusyError(
+            "Another category is already being scanned -- only one scan runs at a time. Try again shortly."
+        )
+    try:
+        return _scan_category_impl(category)
+    finally:
+        _scan_slot.release()
+
+
+def _scan_category_impl(category: str) -> dict:
     """Discovery-mode scan of exactly one category -- the expensive,
     explicit-trigger-only counterpart to build_scan_result()'s always-free
     crosswalk pass. Reuses load_prices_for_category() (main.py) unchanged:

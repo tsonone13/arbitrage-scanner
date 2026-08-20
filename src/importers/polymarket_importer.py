@@ -53,6 +53,31 @@ def _parse_json_list(value: object) -> list:
     return []
 
 
+# Every field any file in this codebase ever reads off a raw Gamma event/
+# market dict (confirmed via grep across the whole tree, not guessed) --
+# trimmed to just these the moment each page arrives, before it's
+# accumulated or cached. A real Gamma market object carries ~86 fields;
+# this project reads about 15 of them. Confirmed empirically (2026-08-20):
+# a single market's untrimmed `description` field alone runs ~1.4KB, and
+# across a 250-event/~5,000-nested-market sports fetch the full untrimmed
+# payload is ~37MB -- held for the full 90s cache TTL on top of whatever a
+# scan is concurrently processing. Trimming shrinks both the cached
+# catalog's standing memory and each request's transient peak, for free --
+# nothing downstream reads a field outside this list, so behavior is
+# unchanged.
+_EVENT_FIELDS = ("negRisk", "title")
+_MARKET_FIELDS = (
+    "id", "question", "slug", "feeSchedule", "feesEnabled", "conditionId", "volume", "endDate",
+    "resolutionSource", "active", "closed", "enableOrderBook", "outcomes", "clobTokenIds", "groupItemTitle",
+)
+
+
+def _trim_event(event: dict) -> dict:
+    trimmed = {field: event.get(field) for field in _EVENT_FIELDS}
+    trimmed["markets"] = [{field: m.get(field) for field in _MARKET_FIELDS} for m in event.get("markets", [])]
+    return trimmed
+
+
 class PolymarketImporter(VenueImporter):
     """Pulls active Polymarket events/markets and prices them from the real CLOB order book."""
 
@@ -70,7 +95,8 @@ class PolymarketImporter(VenueImporter):
         return "Polymarket"
 
     def list_markets(self) -> list[dict]:
-        """Return raw Gamma event objects, each with its nested markets list.
+        """Return Gamma event objects (trimmed to _EVENT_FIELDS/_MARKET_FIELDS
+        -- see _trim_event), each with its nested markets list.
 
         Sorted by 24h volume descending: Polymarket has thousands of open
         events, most of them thin/illiquid, and max_events won't reach all
@@ -113,7 +139,7 @@ class PolymarketImporter(VenueImporter):
             batch = resp.json()
             if not batch:
                 break
-            events.extend(batch)
+            events.extend(_trim_event(e) for e in batch)
             offset += len(batch)
         return events
 

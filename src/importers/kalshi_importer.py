@@ -32,6 +32,30 @@ _TIMEOUT_SECONDS = 15
 _PAGE_SIZE = 200
 _ACTIVE_STATUSES = {"active", "open"}
 
+# Every field any file in this codebase ever reads off a raw Kalshi event/
+# market dict (confirmed via grep across the whole tree, not guessed) --
+# trimmed to just these the moment each page arrives, before it's
+# accumulated or cached. Kalshi's real payload carries far more than this:
+# full multi-paragraph rules_secondary text, settlement metadata, strike
+# details, and dozens of other fields nothing here reads. Confirmed
+# empirically (2026-08-20): 500 events / 3,466 nested markets, untrimmed,
+# is ~15.5MB -- held for the full 90s cache TTL on top of whatever a scan
+# is concurrently processing. Trimming shrinks both the cached catalog's
+# standing memory and each request's transient peak, for free -- nothing
+# downstream reads a field outside this list, so behavior is unchanged.
+_EVENT_FIELDS = ("category", "mutually_exclusive", "event_ticker", "title", "sub_title")
+_MARKET_FIELDS = (
+    "status", "ticker", "yes_bid_dollars", "yes_ask_dollars", "no_bid_dollars", "no_ask_dollars",
+    "title", "volume", "volume_fp", "yes_sub_title", "close_time", "expected_expiration_time",
+    "rules_primary", "yes_ask_size_fp", "yes_bid_size_fp",
+)
+
+
+def _trim_event(event: dict) -> dict:
+    trimmed = {field: event.get(field) for field in _EVENT_FIELDS}
+    trimmed["markets"] = [{field: m.get(field) for field in _MARKET_FIELDS} for m in event.get("markets", [])]
+    return trimmed
+
 # list_markets() is category-agnostic (see its own docstring) -- it always
 # pages through the SAME up-to-max_events full catalog regardless of what
 # category filter a caller will apply afterward. That made every one of
@@ -86,7 +110,8 @@ class KalshiImporter(VenueImporter):
         return "Kalshi"
 
     def list_markets(self) -> list[dict]:
-        """Return raw Kalshi event objects, each with its nested markets list.
+        """Return Kalshi event objects (trimmed to _EVENT_FIELDS/_MARKET_FIELDS
+        -- see _trim_event), each with its nested markets list.
 
         Category-agnostic and cached (see _catalog_cache above) -- every
         KalshiImporter with the same max_events shares one fetch, filtered
@@ -113,7 +138,7 @@ class KalshiImporter(VenueImporter):
 
             payload = resp.json()
             batch = payload.get("events", [])
-            events.extend(batch)
+            events.extend(_trim_event(e) for e in batch)
             cursor = payload.get("cursor")
             if not cursor or not batch:
                 break

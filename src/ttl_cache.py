@@ -58,6 +58,20 @@ class TTLCache:
         # to avoid -- that's specifically about not blocking on a slow
         # network fetch for an unrelated key.
         self._store_lock = threading.Lock()
+        # Deliberately never pruned, unlike _store -- a key's Lock has to
+        # keep meaning the same object to every caller for as long as
+        # anyone might be waiting on it; deleting an entry while another
+        # thread holds a reference to the old Lock (blocked, waiting to
+        # acquire it) would let a later caller for the same key get handed
+        # a *different* Lock object, silently breaking the mutual exclusion
+        # this whole cache exists for. Audited instead of "fixed" (2026-08-20):
+        # every real key space this project ever calls this with is small
+        # and fixed for the life of the process (Kalshi: 1-2 distinct
+        # max_events values; Polymarket: (max_events, tag_slug), <=8 tag
+        # slugs; opportunity_view's scan cache: 8 categories) -- worst case
+        # is on the order of 17 Lock objects total, ever, which is a couple
+        # KB, not a real contributor to the OOM crash this project actually
+        # hit. Correctness risk from pruning outweighs a non-existent gain.
         self._locks: dict[object, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
