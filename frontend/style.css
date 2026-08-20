@@ -194,6 +194,19 @@ body {
 }
 
 /* ==========================================================================
+   Site disclaimer
+   ========================================================================== */
+.site-disclaimer {
+  padding: var(--space-2) var(--space-6);
+  background: var(--bg-inset);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
+/* ==========================================================================
    Warning bar
    ========================================================================== */
 .warning-bar {
@@ -271,7 +284,7 @@ body {
   border-color: var(--signal-no-edge);
 }
 
-.tab .dot--unverified {
+.tab .dot--scanned {
   background: var(--signal-uncompared);
   border-color: var(--signal-uncompared);
 }
@@ -394,31 +407,11 @@ body {
   box-shadow: 0 0 28px -8px var(--amber-glow);
 }
 
-.opp-card--muted {
-  background: var(--bg-inset);
-}
-
-.opp-card--unverified {
-  border-style: dashed;
-  background: var(--bg-inset);
-}
-
-.unverified__meta {
+.opp-card__alt-title {
   margin: 0 var(--space-4) var(--space-3);
-}
-
-.unverified__alt-title {
-  margin: 0 0 var(--space-1);
   font-size: 0.8rem;
   color: var(--text-secondary);
   font-style: italic;
-}
-
-.unverified__caveat {
-  margin: 0;
-  font-size: 0.76rem;
-  color: var(--signal-uncompared);
-  line-height: 1.5;
 }
 
 .fee-adjusted__caveat {
@@ -470,20 +463,9 @@ body {
   color: var(--signal-warn);
 }
 
-.status-badge--dim {
-  background: var(--signal-uncompared-dim);
-  color: var(--signal-uncompared);
-}
-
 .status-badge--error {
   background: var(--signal-error-dim);
   color: var(--signal-error);
-}
-
-.status-badge--unverified {
-  background: var(--signal-uncompared-dim);
-  color: var(--signal-uncompared);
-  box-shadow: 0 0 8px -3px var(--signal-uncompared);
 }
 
 .opp-card__routes {
@@ -621,17 +603,6 @@ body {
   border-top: 1px dotted var(--border-subtle);
   color: var(--text-primary);
   font-weight: 600;
-}
-
-.uncompared__detail {
-  margin: 0 var(--space-4) var(--space-4);
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-
-.uncompared__detail .venues {
-  color: var(--text-dim);
 }
 
 /* ==========================================================================

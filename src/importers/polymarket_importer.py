@@ -23,12 +23,21 @@ import requests
 from models import NormalizedPrice
 from importers.base import VenueImporter
 from normalizer import safe_float, validate_price
+from ttl_cache import TTLCache
 
 _GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 _CLOB_BASE_URL = "https://clob.polymarket.com"
 _TIMEOUT_SECONDS = 15
 _EVENTS_PAGE_SIZE = 100
 _BOOKS_BATCH_SIZE = 500
+
+# Same reasoning as KalshiImporter's _catalog_cache: list_markets() is a
+# listing (slow-changing), not a price call (always fetched fresh
+# elsewhere), so caching it briefly doesn't make any shown price stale --
+# see ttl_cache.py. Keyed by (max_events, tag_slug) since, unlike Kalshi,
+# tag_slug is a real server-side filter that changes what gets fetched.
+_CATALOG_CACHE_TTL_SECONDS = 90
+_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS)
 
 
 def _parse_json_list(value: object) -> list:
@@ -67,7 +76,12 @@ class PolymarketImporter(VenueImporter):
         of them. Prioritizing by volume means the events actually worth
         scanning (and most likely to have a real cross-venue counterpart)
         get covered first instead of being crowded out by long-tail markets.
+
+        Cached (see _catalog_cache above), keyed by (max_events, tag_slug).
         """
+        return _catalog_cache.get_or_fetch((self._max_events, self._tag_slug), self._fetch_markets)
+
+    def _fetch_markets(self) -> list[dict]:
         events: list[dict] = []
         offset = 0
         while len(events) < self._max_events:

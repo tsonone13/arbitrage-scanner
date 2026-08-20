@@ -12,7 +12,6 @@
 
   const tplCard = document.getElementById("tpl-opportunity-card");
   const tplRoute = document.getElementById("tpl-route");
-  const tplUncompared = document.getElementById("tpl-uncompared-card");
 
   let state = null; // last successful API payload
   let activeCategory = null;
@@ -96,11 +95,11 @@
     });
   }
 
-  // Crosswalk signal takes priority (it's trusted, scan results aren't),
-  // but a category with zero crosswalk coverage still deserves a dot once
-  // its own scan has actually found something -- otherwise every category
-  // without hand-verified pairs stays permanently dotless even after
-  // scanning turns up real (if unverified) candidates.
+  // Crosswalk signal takes priority (it's already loaded/instant), but a
+  // category with zero crosswalk coverage still deserves a dot once its
+  // own scan has actually found something -- otherwise every category
+  // without crosswalk pairs stays permanently dotless even after scanning
+  // turns up real candidates.
   function dotVariantFor(c, scan) {
     const scanHasProfitable = !!scan && !scan.error && scan.profitable_markets.length > 0;
     if (c.pass_count > 0 || scanHasProfitable) return " dot--pass";
@@ -108,7 +107,7 @@
     if (c.no_edge_count > 0) return " dot--no-edge";
     const scanHasCandidates =
       !!scan && !scan.error && (scan.near_miss_markets.length > 0 || scan.candidate_count > 0);
-    if (scanHasCandidates) return " dot--unverified";
+    if (scanHasCandidates) return " dot--scanned";
     return "";
   }
 
@@ -122,21 +121,17 @@
 
       const scan = scanResults[cat];
 
-      // Only show the "nobody's verified a pair yet" empty state before a
-      // scan has ever run -- once scan results exist (any outcome: found
-      // candidates, found none, even a failed scan), its own section below
-      // is the one true status message for this category. Showing both at
-      // once reads as a contradiction: real, priced candidates directly
-      // under a banner that says nothing is here.
+      // At most one status/empty message renders before real cards -- once
+      // scan results exist (any outcome), its own section below is the one
+      // status message for this category, so every category tab has the
+      // same shape: SCAN button, then either real opportunity cards or one
+      // plain status line. Never a long per-market breakdown list.
       if (c.market_count === 0 && !scan) {
         el.content.appendChild(
           buildEmptyState(
-            "NO VERIFIED MARKETS YET",
-            `No hand-verified Kalshi/Polymarket pairs exist for ${c.label} yet. Coverage is ` +
-              "built one manually-checked pair at a time -- both venues' actual resolution " +
-              "rules read and confirmed, not just matching titles. Click SCAN above to search " +
-              "this category for candidate markets right now -- no coverage yet just means " +
-              "nobody's verified one, not that the search hasn't been done."
+            "NOTHING LOADED YET",
+            `No crosswalk pairs configured for ${c.label} yet. Click SCAN below to search this ` +
+              "category for live arb opportunities."
           )
         );
       } else if (c.market_count > 0) {
@@ -152,23 +147,9 @@
             card.style.setProperty("--i", cardIndex++);
             el.content.appendChild(card);
           });
-        }
-
-        if (c.uncompared_markets.length > 0) {
-          el.content.appendChild(sectionLabel(`Not compared this scan (${c.uncompared_markets.length})`));
-          c.uncompared_markets.forEach((u) => {
-            const card = buildUncomparedCard(u);
-            card.style.setProperty("--i", cardIndex++);
-            el.content.appendChild(card);
-          });
-        }
-
-        if (c.markets.length === 0 && c.uncompared_markets.length === 0) {
+        } else if (!scan) {
           el.content.appendChild(
-            buildEmptyState(
-              "NOTHING TO SHOW",
-              "This category has verified coverage but produced no rows this scan -- try RESCAN."
-            )
+            buildEmptyState("NOTHING TO SHOW", "Nothing compared this scan -- try RESCAN.")
           );
         }
       }
@@ -189,7 +170,7 @@
             )
           );
           scan.profitable_markets.forEach((m) => {
-            const card = buildUnverifiedCard(m);
+            const card = buildOpportunityCard(m);
             card.style.setProperty("--i", cardIndex++);
             el.content.appendChild(card);
           });
@@ -201,7 +182,7 @@
             )
           );
           scan.near_miss_markets.forEach((m) => {
-            const card = buildUnverifiedCard(m);
+            const card = buildOpportunityCard(m);
             card.style.setProperty("--i", cardIndex++);
             el.content.appendChild(card);
           });
@@ -338,14 +319,31 @@
     NO_EDGE: { text: "NOT PROFITABLE", cls: "status-badge--no-edge" },
   };
 
+  // Handles both market shapes this site has: crosswalk markets (
+  // market_name) and scan-found markets (kalshi_title/polymarket_title,
+  // shown as a title plus an alt-title line when the venues word it
+  // differently). Both render with the exact same badge/card treatment --
+  // there's no separate "unverified" styling. A scan candidate is a real,
+  // computed number resting on an automated title match rather than a
+  // human reading both venues' rules; see the sitewide disclaimer banner
+  // for the standing caveat, instead of repeating one on every card.
   function buildOpportunityCard(market) {
     const node = tplCard.content.firstElementChild.cloneNode(true);
     const badge = node.querySelector(".status-badge");
     const shape = STATUS_BADGE[market.best_status] || STATUS_BADGE.NO_EDGE;
     badge.textContent = shape.text;
     badge.classList.add(shape.cls);
-    node.querySelector(".opp-card__name").textContent = market.market_name;
+    node.querySelector(".opp-card__name").textContent = market.market_name || market.kalshi_title;
 
+    const extras = [];
+    const altTitle =
+      market.polymarket_title && market.polymarket_title !== market.kalshi_title ? market.polymarket_title : null;
+    if (altTitle) {
+      const alt = document.createElement("p");
+      alt.className = "opp-card__alt-title";
+      alt.textContent = `Polymarket: "${altTitle}"`;
+      extras.push(alt);
+    }
     if (market.best_status === "FEE_ADJUSTED_NO_EDGE") {
       const caveat = document.createElement("p");
       caveat.className = "fee-adjusted__caveat";
@@ -353,7 +351,10 @@
         "Cleared the flat 0.30% fee-buffer estimate, but real per-venue trading fees erase the " +
         "entire edge before any size is tradeable — see the sizing breakdown below. Not a real " +
         "arbitrage right now.";
-      node.querySelector(".opp-card__head").after(caveat);
+      extras.push(caveat);
+    }
+    if (extras.length > 0) {
+      node.querySelector(".opp-card__head").after(...extras);
     }
 
     const routesWrap = node.querySelector(".opp-card__routes");
@@ -397,7 +398,7 @@
     // buffer net_edge by construction (that's why arb_engine passed it),
     // but is not actually profitable once real per-venue fees are counted,
     // so it must not render green here.
-    const isRealPositive = route.status === "PASS" || route.status === "UNVERIFIED_MATCH";
+    const isRealPositive = route.status === "PASS";
     hero.appendChild(
       buildStat(
         "Net Edge",
@@ -489,54 +490,6 @@
     wrap.appendChild(profit);
 
     return wrap;
-  }
-
-  function buildUnverifiedCard(market) {
-    const node = tplCard.content.firstElementChild.cloneNode(true);
-    node.classList.add("opp-card--unverified");
-    const badge = node.querySelector(".status-badge");
-    const isMatch = market.best_status === "UNVERIFIED_MATCH";
-    badge.textContent = isMatch ? "UNVERIFIED MATCH" : "UNVERIFIED — NOT PROFITABLE";
-    badge.classList.add("status-badge--unverified");
-    node.querySelector(".opp-card__name").textContent = market.kalshi_title;
-
-    const meta = document.createElement("div");
-    meta.className = "unverified__meta";
-    if (market.kalshi_title !== market.polymarket_title) {
-      const alt = document.createElement("p");
-      alt.className = "unverified__alt-title";
-      alt.textContent = `Polymarket: "${market.polymarket_title}"`;
-      meta.appendChild(alt);
-    }
-    const caveat = document.createElement("p");
-    caveat.className = "unverified__caveat";
-    caveat.textContent =
-      "Title match only — not confirmed by reading either venue's actual resolution rules. " +
-      "Verify before trusting this number.";
-    meta.appendChild(caveat);
-    node.querySelector(".opp-card__head").after(meta);
-
-    const routesWrap = node.querySelector(".opp-card__routes");
-    market.routes.forEach((route) => routesWrap.appendChild(buildRoute(route)));
-    return node;
-  }
-
-  const UNCOMPARED_COPY = {
-    no_live_quote: (u) =>
-      `${u.venues_missing_quote.join(", ") || "One venue"} has no live tradeable price for this market right now.`,
-    close_date_mismatch: (u) =>
-      u.detail ||
-      "Both venues quoted, but their listed close dates don't line up closely enough for the scanner to compare them safely.",
-    not_directly_comparable: () =>
-      "Both venues have data, but it didn't form a directly comparable pair this scan.",
-  };
-
-  function buildUncomparedCard(u) {
-    const node = tplUncompared.content.firstElementChild.cloneNode(true);
-    node.querySelector(".opp-card__name").textContent = u.market_name;
-    const copyFn = UNCOMPARED_COPY[u.reason] || UNCOMPARED_COPY.not_directly_comparable;
-    node.querySelector(".uncompared__detail").textContent = copyFn(u);
-    return node;
   }
 
   function renderFatalError(err) {

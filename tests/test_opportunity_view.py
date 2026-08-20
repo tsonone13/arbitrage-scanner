@@ -17,12 +17,14 @@ running the function under test and copying its output.
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import opportunity_view  # noqa: E402
 from arb_engine import check_binary_cross_venue_arbs  # noqa: E402
 from models import MarketGroup, NormalizedPrice  # noqa: E402
-from opportunity_view import _real_fee_status, _shape_route  # noqa: E402
+from opportunity_view import _STATUS_RANK, _real_fee_status, _score_candidate, _shape_route  # noqa: E402
 
 _FEE_BUFFER = 0.003
 
@@ -79,9 +81,9 @@ class TestRealFeeStatusUnit(unittest.TestCase):
         self.assertEqual(_real_fee_status("PASS", sizing), "FEE_ADJUSTED_NO_EDGE")
 
     def test_pass_with_unavailable_sizing_downgraded_not_trusted(self):
-        # Can't verify real profit -> must not default to trusting the flat
-        # buffer's PASS. Erring toward caution, same principle as
-        # UNVERIFIED_MATCH never being shown as a trusted PASS.
+        # Can't compute real profit -> must not default to trusting the
+        # flat buffer's PASS. Erring toward caution when the real number
+        # simply isn't available, not just when it's confirmed negative.
         self.assertEqual(_real_fee_status("PASS", None), "FEE_ADJUSTED_NO_EDGE")
 
 
@@ -180,6 +182,85 @@ class TestShapeRouteEndToEnd(unittest.TestCase):
         # min_edge (0.005) -> arb_engine drops it entirely.
         opps = check_binary_cross_venue_arbs(group, _FEE_BUFFER, min_edge=0.005)
         self.assertEqual(opps, [])
+
+
+class TestScanCandidateBestStatus(unittest.TestCase):
+    """A scan candidate's best_status picks the best of its routes' real
+    statuses (PASS > FEE_ADJUSTED_NO_EDGE > NO_EDGE, via _STATUS_RANK) --
+    the exact same selection build_scan_result() already used for
+    crosswalk markets, now reused for scan candidates too (there is no
+    separate UNVERIFIED_* status anymore; scan candidates use the same
+    vocabulary as everything else on the site).
+    """
+
+    def test_pass_route_wins_over_no_edge_route_from_same_candidate(self):
+        """Kalshi/Polymarket both quote YES and NO, so _score_candidate
+        produces 2 routes:
+          Route A (buy YES Kalshi 0.10 / NO Polymarket 0.85): total_cost=
+          0.95, same numbers as test_flat_buffer_pass_survives_real_fees
+          above -- confirmed PASS with real profit ~0.336.
+          Route B (buy YES Polymarket 0.90 / NO Kalshi 0.95): total_cost=
+          1.85, wildly unprofitable -> raw "NO EDGE" -> shaped "NO_EDGE".
+        best_status must be "PASS" (rank 0), not "NO_EDGE" (rank 2) --
+        one good route is enough to call the whole candidate profitable.
+        """
+        kalshi = make_price(
+            "Kalshi", "K4", yes_ask=0.10, no_ask=0.95, size=10, taker_fee_rate=0.07
+        )
+        poly = make_price(
+            "Polymarket", "P4", yes_ask=0.90, no_ask=0.85, size=10, taker_fee_rate=0.05
+        )
+
+        opps = _score_candidate(kalshi, poly)
+        self.assertEqual(len(opps), 2)
+
+        prices_by_key = {("Kalshi", "K4"): kalshi, ("Polymarket", "P4"): poly}
+        routes = [_shape_route(opp, prices_by_key) for opp in opps]
+        statuses = {r["status"] for r in routes}
+        self.assertEqual(statuses, {"PASS", "NO_EDGE"})
+
+        best_status = min((r["status"] for r in routes), key=lambda s: _STATUS_RANK[s])
+        self.assertEqual(best_status, "PASS")
+
+
+class TestScanResultCaching(unittest.TestCase):
+    """build_category_scan_result() must be a thin cache wrapper around
+    _build_category_scan_result_uncached() -- confirms a repeated call for
+    the same category within the TTL never re-hits Kalshi/Polymarket, which
+    is what actually caps the worst case for a public, unauthenticated POST
+    endpoint (see build_category_scan_result's own comment for why this is
+    a real stability requirement, not just a latency optimization).
+    """
+
+    def setUp(self):
+        # The cache is a module-level singleton (by design -- it must be
+        # shared across requests, not per-call) -- clear it before each
+        # test so tests can't see each other's cached entries.
+        opportunity_view._scan_result_cache._store.clear()
+
+    def test_second_call_same_category_does_not_recompute(self):
+        with mock.patch.object(
+            opportunity_view, "_build_category_scan_result_uncached", return_value={"category": "tech"}
+        ) as mocked:
+            first = opportunity_view.build_category_scan_result("tech")
+            second = opportunity_view.build_category_scan_result("tech")
+
+        self.assertEqual(first, {"category": "tech"})
+        self.assertEqual(second, {"category": "tech"})
+        mocked.assert_called_once_with("tech")
+
+    def test_different_categories_computed_independently(self):
+        with mock.patch.object(
+            opportunity_view,
+            "_build_category_scan_result_uncached",
+            side_effect=lambda cat: {"category": cat},
+        ) as mocked:
+            tech_result = opportunity_view.build_category_scan_result("tech")
+            sports_result = opportunity_view.build_category_scan_result("sports")
+
+        self.assertEqual(tech_result, {"category": "tech"})
+        self.assertEqual(sports_result, {"category": "sports"})
+        self.assertEqual(mocked.call_count, 2)
 
 
 if __name__ == "__main__":

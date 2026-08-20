@@ -24,11 +24,25 @@ import requests
 from models import NormalizedPrice
 from importers.base import VenueImporter
 from normalizer import safe_float, validate_price
+from ttl_cache import TTLCache
 
 _BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 _TIMEOUT_SECONDS = 15
 _PAGE_SIZE = 200
 _ACTIVE_STATUSES = {"active", "open"}
+
+# list_markets() is category-agnostic (see its own docstring) -- it always
+# pages through the SAME up-to-max_events full catalog regardless of what
+# category filter a caller will apply afterward. That made every one of
+# this project's 8 website category tabs independently re-page through
+# ~6000 events on every scan, even though "which events currently exist"
+# barely changes between scans seconds apart -- confirmed the dominant
+# cost empirically (~15-20s of a ~15-25s category scan). Cached here,
+# keyed by max_events, so scanning several categories in a row only pays
+# this cost once. Never applied to price/order-book calls (see
+# ttl_cache.py's own docstring for why that split is safe).
+_CATALOG_CACHE_TTL_SECONDS = 90
+_catalog_cache = TTLCache(_CATALOG_CACHE_TTL_SECONDS)
 
 # Kalshi's exact per-market taker fee rate lives behind GET /margin/fee_tiers,
 # which requires a signed API key (KALSHI-ACCESS-*) -- not used here, same as
@@ -71,7 +85,15 @@ class KalshiImporter(VenueImporter):
         return "Kalshi"
 
     def list_markets(self) -> list[dict]:
-        """Return raw Kalshi event objects, each with its nested markets list."""
+        """Return raw Kalshi event objects, each with its nested markets list.
+
+        Category-agnostic and cached (see _catalog_cache above) -- every
+        KalshiImporter with the same max_events shares one fetch, filtered
+        client-side per-instance afterward in get_normalized_prices().
+        """
+        return _catalog_cache.get_or_fetch(self._max_events, self._fetch_markets)
+
+    def _fetch_markets(self) -> list[dict]:
         events: list[dict] = []
         cursor = None
         while len(events) < self._max_events:

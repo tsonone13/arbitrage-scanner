@@ -21,6 +21,7 @@ expensively second":
 """
 
 import argparse
+import concurrent.futures
 from pathlib import Path
 
 import terminal_reporter
@@ -144,25 +145,43 @@ def load_prices_for_category(
     """Discovery path: list one category on both venues, find title-match
     candidates from metadata alone, then price only the crosswalk + matched
     subset. Returns (priced_prices, total_markets_listed, candidates).
+
+    The Kalshi and Polymarket listing fetches are independent network calls
+    (different hosts, no data dependency between them), so for source="live"
+    they run concurrently in a thread pool instead of one after another --
+    both are synchronous `requests` calls under the hood, so this overlaps
+    their I/O without needing an async rewrite of the importers. Combined
+    with list_markets() now being cached across categories (see
+    kalshi_importer.py / polymarket_importer.py's _catalog_cache), a
+    category scan that isn't the first one in a session is usually
+    dominated by pricing the matched subset below, not listing.
     """
     alias = _CATEGORY_ALIASES[category]
     kalshi_prices: list[NormalizedPrice] = []
     poly_metadata: list[NormalizedPrice] = []
 
-    if source in ("kalshi", "live"):
-        kalshi_prices = _load_from_venue(
-            "Kalshi", lambda: KalshiImporter(category=alias["kalshi_category"]).get_normalized_prices()
-        )
-    if source in ("polymarket", "live"):
-        # Metadata-only, no CLOB calls -- cheap enough to ask for far more
-        # than the fast-path default (500) and just let it stop naturally
-        # once a tag runs out of results (list_markets() handles that).
-        poly_metadata = _load_from_venue(
-            "Polymarket",
-            lambda: PolymarketImporter(
-                max_events=10000, tag_slug=alias["polymarket_tag_slug"]
-            ).get_market_metadata(),
-        )
+    kalshi_fetch = (
+        (lambda: KalshiImporter(category=alias["kalshi_category"]).get_normalized_prices())
+        if source in ("kalshi", "live") else None
+    )
+    # Metadata-only, no CLOB calls -- cheap enough to ask for far more than
+    # the fast-path default (500) and just let it stop naturally once a tag
+    # runs out of results (list_markets() handles that).
+    poly_fetch = (
+        (lambda: PolymarketImporter(max_events=10000, tag_slug=alias["polymarket_tag_slug"]).get_market_metadata())
+        if source in ("polymarket", "live") else None
+    )
+
+    if kalshi_fetch and poly_fetch:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            kalshi_future = pool.submit(_load_from_venue, "Kalshi", kalshi_fetch)
+            poly_future = pool.submit(_load_from_venue, "Polymarket", poly_fetch)
+            kalshi_prices = kalshi_future.result()
+            poly_metadata = poly_future.result()
+    elif kalshi_fetch:
+        kalshi_prices = _load_from_venue("Kalshi", kalshi_fetch)
+    elif poly_fetch:
+        poly_metadata = _load_from_venue("Polymarket", poly_fetch)
 
     total_listed = len(kalshi_prices) + len(poly_metadata)
     candidates = find_title_candidates(kalshi_prices + poly_metadata, pairs) if source == "live" else []

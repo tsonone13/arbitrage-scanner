@@ -22,6 +22,7 @@ from market_matcher import apply_market_pairs, load_market_pairs, match_markets
 from models import MarketGroup, NormalizedPrice
 from opportunity_ranker import rank_opportunities
 from slippage import opportunity_sizing
+from ttl_cache import TTLCache
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _FEE_BUFFER = 0.003
@@ -278,18 +279,15 @@ def _score_candidate(
     kalshi_row: NormalizedPrice, poly_row: NormalizedPrice
 ) -> list[ArbOpportunity]:
     """Run a title-matched candidate pair through the real, unmodified
-    arb_engine math -- without ever claiming they're the same market.
+    arb_engine math -- the exact same math every crosswalk market on the
+    site uses.
 
     Builds a MarketGroup that exists only in memory for this one
     computation (never written to data/market_pairs.csv, never cached):
     same canonical_market_name and outcome_name="Yes" standardization
     apply_market_pairs() uses for real crosswalk pairs, so
     check_binary_cross_venue_arbs() sees the identical shape it always
-    does. match_confidence=0.0 marks it as structurally unverified in case
-    that field is ever inspected downstream. The caller is responsible for
-    relabeling PASS/NO_EDGE to something that doesn't imply trust -- this
-    function's job is only the arithmetic, identical to every verified
-    market on the site, not the trust judgment.
+    does.
     """
     shared_name = kalshi_row.raw_market_name
     synth_kalshi = replace(kalshi_row, canonical_market_name=shared_name, outcome_name="Yes")
@@ -306,28 +304,48 @@ def _score_candidate(
 
 _MAX_SCAN_CARDS_SHOWN = 3
 
+# POST /api/scan/{category} has no auth and no client-side-only protection
+# is trustworthy (the frontend disables its own button while a scan is in
+# flight, but that's cosmetic -- nothing stops a direct request straight to
+# the API, bypassing the browser entirely). Without a server-side floor, a
+# public visitor scripting repeated calls to the same category could cause
+# unbounded, uncapped real network load against Kalshi/Polymarket for every
+# single request. Caching the full result per category closes that off
+# categorically: however fast or slow a client calls this, the venues
+# themselves are hit at most once per _SCAN_RESULT_CACHE_TTL_SECONDS per
+# category. Short on purpose -- long enough to blunt rapid-fire repeats,
+# short enough that a deliberate, spaced-out RESCAN still gets live numbers.
+_SCAN_RESULT_CACHE_TTL_SECONDS = 10
+_scan_result_cache = TTLCache(_SCAN_RESULT_CACHE_TTL_SECONDS)
+
 
 def build_category_scan_result(category: str) -> dict:
+    return _scan_result_cache.get_or_fetch(category, lambda: _build_category_scan_result_uncached(category))
+
+
+def _build_category_scan_result_uncached(category: str) -> dict:
     """Discovery-mode scan of exactly one category -- the expensive,
     explicit-trigger-only counterpart to build_scan_result()'s always-free
     crosswalk pass. Reuses load_prices_for_category() (main.py) unchanged:
     it already lists the category on both venues, finds title-match
     candidates via find_title_candidates(), and returns real live pricing
     for both the crosswalk-covered markets and every newly-matched
-    candidate. No LLM, no new paid dependency -- candidates get real,
-    computed numbers via the same engine math as everything else, but are
-    always labeled UNVERIFIED_* rather than PASS/NO_EDGE, since a title
-    match alone is exactly the failure mode that caused a real false-
-    arbitrage bug in this project before (see README).
+    candidate.
 
-    Results are split into profitable_markets (the _MAX_SCAN_CARDS_SHOWN
-    UNVERIFIED_MATCH candidates with the best net edge, out of
-    profitable_total found) and, only when there are zero profitable ones,
-    near_miss_markets (the _MAX_SCAN_CARDS_SHOWN candidates closest to
-    profitable by net edge, out of near_miss_total that existed). This is a
-    display-volume decision only: it does not change what counts as
-    UNVERIFIED_MATCH vs UNVERIFIED_NO_EDGE, and every candidate is still
-    priced through the exact same unmodified arb_engine math either way.
+    Each candidate is priced through the exact same unmodified arb_engine
+    math as every crosswalk market on the site and labeled with the same
+    PASS / FEE_ADJUSTED_NO_EDGE / NO_EDGE vocabulary -- there is no
+    separate "unverified" trust tier here (there used to be one, gated on
+    reading each venue's actual resolution rules by hand; removed by
+    deliberate product decision, since this project has no realistic path
+    to verifying every candidate a scan can find, and isn't relied on by
+    third parties trading real money off it -- see the sitewide disclaimer
+    the frontend shows instead). Results are still capped to
+    _MAX_SCAN_CARDS_SHOWN cards so one scan can't dump an unbounded list:
+    profitable_markets is the best-net-edge PASS candidates found, out of
+    profitable_total; near_miss_markets, only shown when nothing passed,
+    is the closest-to-profitable candidates otherwise, out of
+    near_miss_total.
     """
     pairs = load_market_pairs(str(_DATA_DIR / "market_pairs.csv"))
     priced_prices, total_listed, candidates = load_prices_for_category("live", category, pairs)
@@ -354,14 +372,8 @@ def build_category_scan_result(category: str) -> dict:
         if not opps:
             continue  # e.g. close-date guard blocked it, or a leg had no ask
 
-        routes = []
-        for opp in opps:
-            route = _shape_route(opp, prices_by_key)
-            route["status"] = "UNVERIFIED_MATCH" if route["status"] == "PASS" else "UNVERIFIED_NO_EDGE"
-            routes.append(route)
-        best_status = (
-            "UNVERIFIED_MATCH" if any(r["status"] == "UNVERIFIED_MATCH" for r in routes) else "UNVERIFIED_NO_EDGE"
-        )
+        routes = [_shape_route(opp, prices_by_key) for opp in opps]
+        best_status = min((r["status"] for r in routes), key=lambda s: _STATUS_RANK[s])
         scored_markets.append({
             "kalshi_title": kalshi_stub.raw_market_name,
             "polymarket_title": poly_stub.raw_market_name,
@@ -393,18 +405,17 @@ def _split_scan_results(scored_markets: list[dict]) -> tuple[list[dict], int, li
 
     Returns (profitable_markets, profitable_total, near_miss_markets,
     near_miss_total). profitable_markets is the _MAX_SCAN_CARDS_SHOWN
-    UNVERIFIED_MATCH markets with the best net edge, out of profitable_total
-    found -- capped the same way near-misses already were, so one category
-    scan can never dump an unbounded card list regardless of how many
-    genuinely profitable-looking candidates a scan turns up. near_miss_markets
-    is only ever populated when profitable_markets is empty -- the
-    _MAX_SCAN_CARDS_SHOWN UNVERIFIED_NO_EDGE markets closest to profitable
-    (highest net edge), out of near_miss_total that existed. Mutates
-    nothing; pops the internal "_best_net_edge" sort key from every dict in
-    scored_markets before returning (never reaches the frontend, same
-    reason match_confidence doesn't).
+    PASS markets with the best net edge, out of profitable_total found --
+    capped so one category scan can never dump an unbounded card list
+    regardless of how many genuinely profitable-looking candidates a scan
+    turns up. near_miss_markets is only ever populated when
+    profitable_markets is empty -- the _MAX_SCAN_CARDS_SHOWN
+    FEE_ADJUSTED_NO_EDGE/NO_EDGE markets closest to profitable (highest net
+    edge), out of near_miss_total that existed. Mutates nothing; pops the
+    internal "_best_net_edge" sort key from every dict in scored_markets
+    before returning (never reaches the frontend).
     """
-    profitable_markets = [m for m in scored_markets if m["best_status"] == "UNVERIFIED_MATCH"]
+    profitable_markets = [m for m in scored_markets if m["best_status"] == "PASS"]
     profitable_markets.sort(key=lambda m: (-m["_best_net_edge"], m["kalshi_title"]))
     profitable_total = len(profitable_markets)
     profitable_markets = profitable_markets[:_MAX_SCAN_CARDS_SHOWN]
@@ -412,7 +423,7 @@ def _split_scan_results(scored_markets: list[dict]) -> tuple[list[dict], int, li
     near_miss_markets: list[dict] = []
     near_miss_total = 0
     if not profitable_total:
-        near_misses = [m for m in scored_markets if m["best_status"] == "UNVERIFIED_NO_EDGE"]
+        near_misses = [m for m in scored_markets if m["best_status"] != "PASS"]
         near_misses.sort(key=lambda m: (-m["_best_net_edge"], m["kalshi_title"]))
         near_miss_total = len(near_misses)
         near_miss_markets = near_misses[:_MAX_SCAN_CARDS_SHOWN]
