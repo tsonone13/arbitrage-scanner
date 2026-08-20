@@ -189,10 +189,11 @@
         } else if (scan.candidate_count > 0) {
           el.content.appendChild(
             buildEmptyState(
-              "NO PRICEABLE CANDIDATES",
+              "NO COMPARABLE CANDIDATES",
               `Scanned ${scan.total_listed.toLocaleString()} listed markets and found ` +
-                `${scan.candidate_count} title match${scan.candidate_count === 1 ? "" : "es"}, but none had a ` +
-                "live, tradeable price on both venues this scan -- try RESCAN."
+                `${scan.candidate_count} title match${scan.candidate_count === 1 ? "" : "es"}, but none priced ` +
+                "out as a real comparison -- either a live price was missing on one side, or the two venues' " +
+                "listed close dates disagree enough that this tool won't treat them as the same bet."
             )
           );
         } else {

@@ -182,13 +182,38 @@ class TestFindTitleCandidates(unittest.TestCase):
         self.assertNotIn((k, p), result)
 
     def test_custom_min_similarity_threshold_is_honored(self):
-        # Same boundary pair as test_hand_computed_just_below_threshold_boundary
-        # (overlap 0.4): excluded at the default 0.5 threshold, included
-        # when the caller explicitly lowers min_similarity to 0.4.
-        k = make_price("Kalshi", "K1", "Will Team Alpha win the 2026 Championship?")
-        p = make_price("Polymarket", "P1", "2026 Championship Parking Merchandise Ticket Sale")
+        # k = {team, alpha, beta, gamma, win, 2026, championship} (7)
+        # p = {2026, championship, team, delta, epsilon, zeta, parking, sale} (8)
+        # shared = {2026, championship, team} = 3 (>= _MIN_SHARED_TOKENS, so
+        # the count gate doesn't confound this -- deliberately not reusing
+        # the 2-shared-token pair from the boundary tests above, since that
+        # would now be excluded by the count gate before min_similarity is
+        # even reached). ratio = 3/min(7,8) = 3/7 ~= 0.4286: excluded at the
+        # default 0.5 threshold, included when the caller explicitly lowers
+        # min_similarity to 0.4.
+        k = make_price("Kalshi", "K1", "Will Team Alpha Beta Gamma win the 2026 Championship?")
+        p = make_price("Polymarket", "P1", "2026 Championship Team Delta Epsilon Zeta Parking Sale")
         self.assertEqual(find_title_candidates([k, p]), [])
         self.assertEqual(find_title_candidates([k, p], min_similarity=0.4), [(k, p)])
+
+    def test_shared_proper_noun_alone_does_not_produce_a_candidate(self):
+        """Regression test for a real false positive found on live sports
+        data (2026-08-20): a football hosting-announcement question and an
+        unrelated baseball point-spread bet, sharing nothing but the city
+        name. {san, francisco} = 2 shared tokens (the old _MIN_SHARED_TOKENS
+        floor) and 2 of the Polymarket title's 4 tokens = 0.5 similarity
+        (exactly _MIN_SIMILARITY) -- both gates passed by coincidence, not
+        real content overlap. See _MIN_SHARED_TOKENS's own comment for the
+        full incident and why 3, not some other value, was chosen.
+        """
+        k = make_price(
+            "Kalshi", "K1",
+            "Will the San Francisco Pro Football team be announced as the "
+            "host for the 2031 Pro Football Championship?",
+        )
+        p = make_price("Polymarket", "P1", "Spread: San Francisco Giants (-2.5)")
+        result = find_title_candidates([k, p])
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

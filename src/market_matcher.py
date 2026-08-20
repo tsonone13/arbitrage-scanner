@@ -127,8 +127,34 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 # A pair needs at least this many shared significant words, *and* to clear
 # _MIN_SIMILARITY below -- the count alone stops two long, mostly-unrelated
 # titles that happen to share one common word from slipping through on a
-# technicality.
-_MIN_SHARED_TOKENS = 2
+# technicality. Raised from 2 to 3 after a real false positive on live
+# sports data (2026-08-20): a two-word proper noun alone -- a city name --
+# was enough to clear both gates when the other title was short. "Will the
+# San Francisco Pro Football team be announced as the host for the 2031
+# Pro Football Championship?" matched Polymarket's "Spread: San Francisco
+# Giants (-2.5)": {san, francisco} = 2 shared tokens (exactly the old
+# floor) and 2 of the Polymarket title's 4 tokens = 0.5 similarity (exactly
+# _MIN_SIMILARITY) -- a football hosting-announcement question and an
+# unrelated baseball point-spread bet, sharing nothing but the city. Same
+# pattern hit Tampa Bay/Los Angeles pairs in the same scan and separately
+# in the culture category (Tom Holland: Bond casting vs. Spider-Man
+# casting; two different actors "as" two different unrelated characters).
+# Requiring 3 forces at least one word of real content beyond a shared
+# name. Checked empirically against four live categories before raising
+# this: removed 22/22 examined sports false positives and 19/24 culture
+# false positives, while every genuine match found in politics (1/1) and
+# elections (16/16) -- including same-question-different-country pairs
+# that only have a 2-word name plus one country/context word -- survived
+# unchanged. (Tried 4: cuts recall sharply for no real precision gain --
+# most genuine "[name] + [1 context word]" pairs only clear 3, so 4 drops
+# elections to 3/16 and loses the one politics match entirely.) Doesn't
+# catch every case of this failure mode -- "Taylor Swift perform at Sphere
+# 2027?" vs "Taylor Swift pregnant before 2027?" still shares 3 tokens
+# (taylor, swift, 2027) and survives -- but 3 is the value that removes
+# the bulk of it without cutting real matches; a full fix would need to
+# distinguish proper nouns from regular words, which this token-overlap
+# approach has no way to do.
+_MIN_SHARED_TOKENS = 3
 # Overlap coefficient (|shared| / smaller title's token count), not Jaccard
 # (|shared| / union) -- confirmed by hand on a real pair still in this
 # category ("Fed Decision Sep 2026 Meeting: Hike 50+ bps" vs "Will the Fed
