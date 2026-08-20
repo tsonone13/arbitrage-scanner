@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Arbitrage Engine for Prediction Markets</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=JetBrains+Mono:wght@700;800&display=swap"
+  rel="stylesheet"
+/>
+<link rel="stylesheet" href="/static/style.css?v=5" />
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◆</span>
+    <h1>ARBITRAGE<span class="accent">/</span>ENGINE</h1>
+  </div>
+  <div class="scan-meta">
+    <span id="asOf" class="as-of">-- awaiting first scan --</span>
+    <button id="refreshBtn" class="refresh-btn" type="button">⟳ RESCAN</button>
+  </div>
+</header>
+
+<div id="warningBar" class="warning-bar" hidden></div>
+
+<nav id="tabs" class="tabs" role="tablist" aria-label="Categories"></nav>
+
+<main id="content" class="content" aria-live="polite"></main>
+
+<template id="tpl-opportunity-card">
+  <article class="opp-card">
+    <header class="opp-card__head">
+      <span class="status-badge"></span>
+      <h3 class="opp-card__name"></h3>
+    </header>
+    <div class="opp-card__routes"></div>
+  </article>
+</template>
+
+<template id="tpl-route">
+  <div class="route">
+    <div class="route__label"></div>
+    <div class="legs"></div>
+    <div class="hero-row"></div>
+    <div class="sizing"></div>
+  </div>
+</template>
+
+<template id="tpl-uncompared-card">
+  <article class="opp-card opp-card--muted">
+    <header class="opp-card__head">
+      <span class="status-badge status-badge--dim"></span>
+      <h3 class="opp-card__name"></h3>
+    </header>
+    <p class="uncompared__detail"></p>
+  </article>
+</template>
+
+<script src="/static/app.js?v=5"></script>
+</body>
+</html>

@@ -1,38 +1,41 @@
 """Groups normalized prices into MarketGroup objects.
 
-v1 matching is intentionally simple and exact: two NormalizedPrice rows are
-only considered the same market if they share an identical
+Trusted matching is intentionally simple and exact: two NormalizedPrice rows
+are only considered the same market if they share an identical
 (canonical_market_name, market_type) key. That's a conservative choice on
 purpose -- for live Kalshi/Polymarket data, canonical_market_name is
 currently just each venue's own title (see kalshi_importer.py /
-polymarket_importer.py), so this only merges markets across venues when
-those titles happen to line up exactly. It will never silently mismatch two
-different markets just because their titles look similar.
+polymarket_importer.py), so match_markets() only merges markets across
+venues when those titles happen to line up exactly. It will never silently
+mismatch two different markets just because their titles look similar.
 
-Future versions should improve matching using:
-- market title similarity (embeddings / fuzzy text as a candidate generator,
-  not a final decision -- short prediction-market titles are exactly the
-  case where "looks similar" and "is the same bet" diverge)
-- outcome names
-- close time / event date proximity
-- resolution source agreement
-- contract wording and settlement rules
-and should assign match_confidence < 1.0 for anything short of a verified,
-ideally human-reviewed, cross-venue mapping.
-
-data/market_pairs.csv is that verified mapping today, not just documentation:
+data/market_pairs.csv is a verified mapping, not just documentation:
 load_market_pairs()/apply_market_pairs() override canonical_market_name (and
 market_type) for specific (venue, market_id) rows that a human has actually
 checked resolve on the same question, same date, same source on both venues
--- title text is never trusted on its own to merge two venues' markets (see
-arb_engine.py's cross-venue guard for why that specifically failed once
-already).
+-- title text is never trusted on its own to merge two venues' markets into
+something arb_engine.py treats as tradeable (see arb_engine.py's cross-venue
+guard for why that specifically failed once already).
+
+find_title_candidates() below is a different, lower-stakes job: surfacing
+*leads* worth pricing and showing a human as explicitly unverified (never
+fed into match_markets()/the crosswalk). Since nothing here ever grants
+trust, it's fuzzy on purpose -- token-overlap similarity, not exact
+equality -- so it can catch two venues asking the same real question in
+different words (e.g. "Fed Decision Sep 2026 Meeting: Hike 50+ bps" vs.
+"Will the Fed raise rates by 50+ bps at the September 2026 meeting?"),
+which exact-title matching structurally cannot. A wider net here costs
+nothing in trust (every result still goes through
+opportunity_view.py's UNVERIFIED_MATCH/UNVERIFIED_NO_EDGE relabeling and
+still faces arb_engine's own close-date guard), only in how many leads get
+shown -- and improving future work using outcome names / resolution source
+agreement / contract wording remains open, same as before.
 """
 
 import csv
+import re
 from collections import defaultdict
 from dataclasses import replace
-from itertools import combinations
 
 from models import MarketGroup, NormalizedPrice
 
@@ -113,42 +116,168 @@ def apply_market_pairs(
     return result
 
 
-def _normalize_title(text: str) -> str:
-    return " ".join(text.lower().strip().rstrip("?.!").split())
+# Universal English function words only -- no domain words (e.g. "win"),
+# since those still carry real signal and hand-tuning a domain stoplist
+# risks quietly cutting precision for no clearly justified gain.
+_STOPWORDS = frozenset({
+    "will", "the", "a", "an", "of", "in", "on", "to", "be", "by", "at", "for",
+    "and", "or", "is", "are", "this", "that", "it", "as", "with",
+})
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# A pair needs at least this many shared significant words, *and* to clear
+# _MIN_SIMILARITY below -- the count alone stops two long, mostly-unrelated
+# titles that happen to share one common word from slipping through on a
+# technicality.
+_MIN_SHARED_TOKENS = 2
+# Overlap coefficient (|shared| / smaller title's token count), not Jaccard
+# (|shared| / union) -- confirmed by hand on a real pair still in this
+# category ("Fed Decision Sep 2026 Meeting: Hike 50+ bps" vs "Will the Fed
+# raise rates by 50+ bps at the September 2026 meeting?"): Jaccard scores
+# that genuine match at 0.45 (5 shared of 11 union) because Polymarket's
+# phrasing is longer, which a naive 0.5 Jaccard cutoff would have missed
+# entirely; overlap coefficient scores the same pair 0.625 (5 of the
+# shorter title's 8 tokens) and still separates it from a same-length,
+# different-month decoy ("Will the Fed cut rates in December 2026?", 0.4)
+# by a healthy margin.
+_MIN_SIMILARITY = 0.5
+# A token this common *within one scan's batch* is dropped from blocking
+# AND from the similarity score's NUMERATOR (shared-token count) -- see
+# _token_overlap's docstring for why the DENOMINATOR still uses each
+# title's full, unfiltered length. Confirmed necessary, not just
+# theoretical, on live sports data (2026-08-19): titles built around a long
+# shared event/franchise phrase ("...the 2038 Men's FIFA World Cup?" vs
+# "...host the final of the 2030 FIFA World Cup?") scored 0.5 overlap from
+# "fifa"/"world"/"cup"/"host" alone, across genuinely different
+# propositions (different countries, different years a full 8 years apart)
+# -- 119,229 raw candidates on that one category scan. Raising
+# _MIN_SIMILARITY globally can't fix this cleanly: the same live data's
+# genuine Fed-meeting rewording (see _MIN_SIMILARITY's own comment) scores
+# 0.625, uncomfortably close to that false positive's 0.5 -- no single flat
+# cutoff separates them. Dropping pathologically common tokens from the
+# numerator does: it directly targets *why* the false positive scored high
+# (a repeated boilerplate phrase, not real content overlap) without
+# touching genuinely rare, distinguishing words like "fed"/"bps".
+_MAX_COMMON_TOKEN_DF = 50
+
+
+def _tokenize(text: str) -> frozenset[str]:
+    return frozenset(w for w in _TOKEN_RE.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1)
+
+
+def _token_overlap(a: frozenset[str], b: frozenset[str], common_tokens: frozenset[str] = frozenset()) -> float:
+    """(shared tokens, excluding common_tokens) / size of the SMALLER
+    title's FULL token set (including common_tokens) -- see
+    _MIN_SIMILARITY's comment for why overlap coefficient, not Jaccard.
+    0.0 (not an error) if either title tokenized to nothing.
+
+    The denominator deliberately keeps common words in the count even
+    though the numerator excludes them from counting as "shared." Using
+    the post-filter, common-word-free length for BOTH was the first
+    version of this fix and still had a real bug, confirmed on live data:
+    a short title that's built almost entirely from common/boilerplate
+    words (e.g. "Will Kirk Cousins announce his retirement before the
+    2026-27 NFL season?" -- everything but the athlete's name is common
+    within a sports-category batch) reduces to just that one rare name
+    after filtering, which then scores a trivial 1.0 against ANY other
+    title naming the same athlete, regardless of what it's actually
+    asking (a completely different real question -- "be the Raiders' Week
+    1 starting QB?" -- scored a perfect 1.0 under the filtered-denominator
+    version). Keeping the full original length as the denominator instead
+    means a title that's mostly boilerplate can only ever contribute a
+    small fraction of "real," specific overlap, however little content
+    happens to remain after filtering -- confirmed this correctly drops
+    that pair's score to 0.33, and two more real false positives found the
+    same way (Pete Buttigieg: DNC chair vs. presidential run, scored 1.0 ->
+    0.29; Goldman Sachs: next CEO vs. will it fail, scored 0.67 -> 0.40),
+    while the genuine Fed-meeting rewording is unaffected (0.625 either
+    way -- nothing in that pair was common enough to filter).
+    """
+    if not a or not b:
+        return 0.0
+    shared = len((a - common_tokens) & (b - common_tokens))
+    return shared / min(len(a), len(b))
 
 
 def find_title_candidates(
-    prices: list[NormalizedPrice], pairs: dict[tuple[str, str], tuple[str, str]] | None = None
+    prices: list[NormalizedPrice],
+    pairs: dict[tuple[str, str], tuple[str, str]] | None = None,
+    min_similarity: float = _MIN_SIMILARITY,
 ) -> list[tuple[NormalizedPrice, NormalizedPrice]]:
-    """Surface possible cross-venue matches by normalized-title equality, for
-    a human to review -- a lead, never a verified match, and never fed to
-    arb_engine directly.
+    """Surface possible cross-venue matches by fuzzy title similarity, for a
+    human (or the site's UNVERIFIED_MATCH display) to review -- a lead,
+    never a verified match, and never fed to match_markets()/arb_engine
+    directly. See the module docstring for why fuzzy is safe here even
+    though it's deliberately avoided for trusted matching.
 
-    Deliberately shallow normalization (lowercase, strip whitespace/trailing
-    punctuation): enough to tolerate formatting differences, not fuzzy or
-    semantic matching -- exactly the kind of "looks similar" similarity this
-    project has already been burned by trusting (see the module docstring).
-    Pairs already in the verified crosswalk are excluded since they're
-    already handled, not new leads.
+    Two scale-driven steps happen before any pair is scored, both keyed off
+    each token's document frequency within THIS batch (i.e. this one scan,
+    not a fixed global list -- what's "pathologically common" depends on
+    the category being scanned):
+    - Blocked via an inverted token index (Kalshi row -> shares a token
+      with which Polymarket rows) rather than comparing every Kalshi title
+      against every Polymarket title -- needed at this project's real
+      scale (a single category listing can be tens of thousands of rows
+      per venue; a full cross product would be infeasible).
+    - Tokens with document frequency over _MAX_COMMON_TOKEN_DF are treated
+      as batch-local stopwords -- excluded from blocking (would fan out to
+      a near-full cross product for near-zero signal) and from counting as
+      "shared" in the similarity score (see _MAX_COMMON_TOKEN_DF's and
+      _token_overlap's comments for why this is required, not just an
+      optimization).
 
-    Meant to run on a small, scoped set of prices (e.g. one category) --
-    it's O(n) to bucket, but the point is to find candidates worth manually
-    verifying before fetching full pricing for them, not to replace the
-    crosswalk.
+    A surviving pair still must share at least _MIN_SHARED_TOKENS
+    non-common tokens AND clear min_similarity (see _token_overlap for its
+    exact formula) to become a candidate.
+
+    Pairs where both sides already have an independent crosswalk entry are
+    excluded, same as before -- they're already handled, not new leads.
     """
     pairs = pairs or {}
-    by_title: dict[str, list[NormalizedPrice]] = defaultdict(list)
-    for price in prices:
-        by_title[_normalize_title(price.raw_market_name)].append(price)
+    kalshi_rows = [(p, _tokenize(p.raw_market_name)) for p in prices if p.venue == "Kalshi"]
+    poly_rows = [(p, _tokenize(p.raw_market_name)) for p in prices if p.venue == "Polymarket"]
+
+    doc_freq: dict[str, int] = defaultdict(int)
+    for _price, tokens in kalshi_rows:
+        for tok in tokens:
+            doc_freq[tok] += 1
+    for _price, tokens in poly_rows:
+        for tok in tokens:
+            doc_freq[tok] += 1
+    common_tokens = frozenset(tok for tok, count in doc_freq.items() if count > _MAX_COMMON_TOKEN_DF)
+
+    def significant(tokens: frozenset[str]) -> frozenset[str]:
+        return tokens - common_tokens if common_tokens else tokens
+
+    poly_significant = [significant(tokens) for _price, tokens in poly_rows]
+    poly_index: dict[str, list[int]] = defaultdict(list)
+    for i, tokens in enumerate(poly_significant):
+        for tok in tokens:
+            poly_index[tok].append(i)
 
     candidates: list[tuple[NormalizedPrice, NormalizedPrice]] = []
-    for rows in by_title.values():
-        if len({r.venue for r in rows}) < 2:
-            continue
-        for a, b in combinations(rows, 2):
-            if a.venue == b.venue:
+    seen_pairs: set[tuple[str, str]] = set()
+    for kalshi_price, k_tokens in kalshi_rows:
+        k_sig = significant(k_tokens)
+        blocked_poly_idxs: set[int] = set()
+        for tok in k_sig:
+            blocked_poly_idxs.update(poly_index.get(tok, ()))
+
+        for i in blocked_poly_idxs:
+            poly_price, p_tokens = poly_rows[i]
+            pair_key = (kalshi_price.market_id, poly_price.market_id)
+            if pair_key in seen_pairs:
                 continue
-            if (a.venue, a.market_id) in pairs and (b.venue, b.market_id) in pairs:
+            if (kalshi_price.venue, kalshi_price.market_id) in pairs and (poly_price.venue, poly_price.market_id) in pairs:
                 continue
-            candidates.append((a, b))
+            # Shared-count gate uses the significant (common-word-free)
+            # sets; the ratio passed to _token_overlap uses the FULL
+            # original token sets -- see that function's docstring for why
+            # the denominator must not be the already-filtered length.
+            shared = len(k_sig & poly_significant[i])
+            if shared < _MIN_SHARED_TOKENS:
+                continue
+            if _token_overlap(k_tokens, p_tokens, common_tokens) < min_similarity:
+                continue
+            seen_pairs.add(pair_key)
+            candidates.append((kalshi_price, poly_price))
     return candidates

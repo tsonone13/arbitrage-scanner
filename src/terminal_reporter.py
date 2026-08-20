@@ -17,7 +17,7 @@ _TYPE_LABELS = {
 
 def print_header(source: str, arb_type: str) -> None:
     console.print(
-        f"\n[bold]Prediction Market Arbitrage Scanner[/bold]  "
+        f"\n[bold]Arbitrage Engine for Prediction Markets[/bold]  "
         f"[dim](source={source}, type={arb_type})[/dim]\n"
     )
 
@@ -124,10 +124,19 @@ def print_opportunity(
         f"[bold]Notes:[/bold] {opp.notes or '-'}",
     ]
 
+    # A flat fee_buffer (opp.fee_buffer) is a simplification -- it doesn't
+    # know either venue's real per-market taker fee. sizing["estimated_profit"]
+    # (slippage.py) does: it's net of both venues' real, nonlinear fee
+    # schedules. A flat-buffer PASS with real_profit <= 0 means the real fees
+    # are bigger than the flat buffer assumed, not a genuine arb -- confirmed
+    # on live data 2026-08-19 (4 of 6 flat-buffer PASSes had real profit == 0).
+    real_profit = sizing.get("estimated_profit") if sizing else None
     if opp.status == "NO EDGE":
         title, color = "[bold red]NOT PROFITABLE[/bold red]", "red"
     elif opp.status == "REVIEW":
         title, color = "[bold yellow]POSSIBLE ARB -- NEEDS REVIEW[/bold yellow]", "yellow"
+    elif real_profit is None or real_profit <= 0:
+        title, color = "[bold yellow]FLAT-BUFFER PASS -- REAL FEES ERASE IT[/bold yellow]", "yellow"
     else:
         title, color = "[bold green]ARB FOUND[/bold green]", "green"
     console.print(Panel("\n".join(lines), title=title, border_style=color))

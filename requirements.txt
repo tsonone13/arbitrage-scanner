@@ -2,3 +2,5 @@ pandas
 python-dotenv
 requests
 rich
+fastapi
+uvicorn[standard]

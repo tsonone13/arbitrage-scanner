@@ -27,6 +27,11 @@ _MOCK_ROWS: list[dict] = [
         yes_bid=0.021, yes_ask=0.023, no_bid=0.975, no_ask=0.977,
         depth=500.0, volume=125000.0, close_time="2026-07-19T23:59:00Z",
         resolution_notes="Resolves YES if USA wins the 2026 FIFA World Cup Final.", timestamp=_TS,
+        # Same representative rate as slippage.py's confirmed real Polymarket
+        # example (a Fed-decision "economics"-category market) -- mock data
+        # otherwise omits this field entirely, which understates real fees
+        # to $0 rather than testing the real-fee-aware PASS check honestly.
+        taker_fee_rate=0.05,
     ),
     dict(
         venue="Kalshi", market_id="KXWCUP-26-USA",
@@ -35,6 +40,7 @@ _MOCK_ROWS: list[dict] = [
         yes_bid=0.034, yes_ask=0.036, no_bid=0.962, no_ask=0.964,
         depth=750.0, volume=98000.0, close_time="2026-07-19T23:59:00Z",
         resolution_notes="Resolves YES if USA wins the 2026 World Cup.", timestamp=_TS,
+        taker_fee_rate=0.07,  # Kalshi's publicly-documented default coefficient
     ),
 
     # --- Scenario 2: binary market with no arbitrage ---
@@ -46,6 +52,7 @@ _MOCK_ROWS: list[dict] = [
         yes_bid=0.60, yes_ask=0.62, no_bid=0.38, no_ask=0.40,
         depth=2000.0, volume=340000.0, close_time="2026-09-17T18:00:00Z",
         resolution_notes="Resolves per official FOMC statement.", timestamp=_TS,
+        taker_fee_rate=0.07,
     ),
     dict(
         venue="Polymarket", market_id="poly-fed-sep-cut",
@@ -55,6 +62,7 @@ _MOCK_ROWS: list[dict] = [
         yes_bid=0.59, yes_ask=0.61, no_bid=0.39, no_ask=0.41,
         depth=1500.0, volume=410000.0, close_time="2026-09-17T18:00:00Z",
         resolution_notes="Resolves per official FOMC statement.", timestamp=_TS,
+        taker_fee_rate=0.05,
     ),
 
     # --- Scenario 3: multi-outcome market with a full-book YES arb ---
@@ -198,6 +206,7 @@ _MOCK_ROWS: list[dict] = [
         yes_bid=0.498, yes_ask=0.500, no_bid=0.501, no_ask=0.505,
         depth=1000.0, volume=20000.0, close_time="2026-08-25T23:59:00Z",
         resolution_notes="Resolves per NWS official precipitation record.", timestamp=_TS,
+        taker_fee_rate=0.07,
     ),
     dict(
         venue="Polymarket", market_id="poly-nyc-rain-0825",
@@ -207,6 +216,7 @@ _MOCK_ROWS: list[dict] = [
         yes_bid=0.505, yes_ask=0.510, no_bid=0.494, no_ask=0.496,
         depth=900.0, volume=18000.0, close_time="2026-08-25T23:59:00Z",
         resolution_notes="Resolves per NWS official precipitation record.", timestamp=_TS,
+        taker_fee_rate=0.05,
     ),
 ]
 

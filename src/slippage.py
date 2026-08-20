@@ -121,7 +121,12 @@ def max_profitable_units(
     total_cost = 0.0
     yes_fees = 0.0
     no_fees = 0.0
-    limiting_factor = "slippage crossed breakeven before either leg's visible liquidity ran out"
+    # None is a real sentinel here, not just an initial value: the `else`
+    # clause below only sets this on natural loop completion (both books
+    # walked to the end), and the `break` path is handled separately after
+    # the loop -- see that block for why the break path itself still needs
+    # to distinguish two different reasons before picking a message.
+    limiting_factor = None
 
     while yes_idx < len(yes_levels) and no_idx < len(no_levels):
         yes_lvl_price = yes_levels[yes_idx][0]
@@ -172,6 +177,22 @@ def max_profitable_units(
             limiting_factor = f"{yes_price.venue} YES-side visible liquidity exhausted"
         else:
             limiting_factor = f"{no_price.venue} NO-side visible liquidity exhausted"
+
+    if limiting_factor is None:
+        # Loop ended via `break` (an unprofitable level), not natural
+        # exhaustion of both books. Two genuinely different situations
+        # were both getting reported as "slippage crossed breakeven" here
+        # before, which is actively misleading for the first one: if
+        # total_units is still 0, NO level was ever walked -- the very
+        # first, cheapest available price already doesn't clear breakeven,
+        # so there's no liquidity or slippage story at all, just an
+        # unprofitable route. Only once at least one level has actually
+        # been walked profitably does a later rejection mean slippage (a
+        # deeper, worse price) is what closed the window.
+        if total_units == 0.0:
+            limiting_factor = "not profitable at any size -- best available price on both legs is already at or past breakeven"
+        else:
+            limiting_factor = "slippage crossed breakeven before either leg's visible liquidity ran out"
 
     total_fees = yes_fees + no_fees
     profit = total_units * guaranteed_payout - total_cost - total_fees - total_units * fee_buffer
