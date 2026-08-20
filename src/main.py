@@ -152,6 +152,38 @@ def load_prices_fast(
 _CATEGORY_SCAN_KALSHI_MAX_EVENTS = 500
 _CATEGORY_SCAN_POLYMARKET_MAX_EVENTS = 250
 
+# Per-category override for the default above. Kalshi's /events has no
+# server-side category filter and no working sort (see kalshi_importer.py's
+# own docstring), so every category scan pages through the SAME default-
+# ordered catalog and just filters client-side -- a flat 500-event budget
+# gives every category a slice roughly proportional to how much of Kalshi's
+# *overall* catalog it represents, which shortchanges categories that are
+# inherently rare in that mix. Confirmed directly (2026-08-20) which
+# categories are worth paying more for and which aren't:
+# - financials (19 of the 500-event slice, 537 of the full ~6000) and tech
+#   (11 of 500, 95 of full) are both genuinely under-sampled, and their real
+#   markets are spread evenly across the whole catalog, not clustered --
+#   raising Kalshi's budget for just these two recovers real, additional
+#   markets throughout the range. Verified the combined fetch (Kalshi 2500 +
+#   Polymarket 250, the worst of the two) at ~301MB RSS for the fetch step
+#   alone, in the same range as sports' own verified-safe combined fetch --
+#   real margin left for the rest of the pipeline.
+# - climate looked like the same problem (11 of 500) but isn't fixable this
+#   way: its one real cross-venue candidate found in this investigation (a
+#   Kalshi/Polymarket Hawaii-hurricane pair) sits at raw event index ~4298
+#   of Kalshi's default ordering -- reaching it costs ~353MB for Kalshi
+#   alone, not affordable. A moderate bump (2500) does add climate markets,
+#   but they're niche Kalshi-only questions (El Niño index bands, volcanic
+#   eruption counts) with no realistic Polymarket counterpart to match
+#   against -- paying more here buys nothing. Left at the shared default.
+# - sports/elections/politics/economics/culture already have reasonable
+#   absolute coverage at the shared default (81-139 events) and weren't
+#   re-examined individually beyond that.
+_CATEGORY_SCAN_KALSHI_MAX_EVENTS_OVERRIDES = {
+    "financials": 2500,
+    "tech": 2500,
+}
+
 
 def load_prices_for_category(
     source: str, category: str, pairs: dict[tuple[str, str], tuple[str, str]]
@@ -173,10 +205,11 @@ def load_prices_for_category(
     alias = _CATEGORY_ALIASES[category]
     kalshi_prices: list[NormalizedPrice] = []
     poly_metadata: list[NormalizedPrice] = []
+    kalshi_max_events = _CATEGORY_SCAN_KALSHI_MAX_EVENTS_OVERRIDES.get(category, _CATEGORY_SCAN_KALSHI_MAX_EVENTS)
 
     kalshi_fetch = (
         (lambda: KalshiImporter(
-            max_events=_CATEGORY_SCAN_KALSHI_MAX_EVENTS, category=alias["kalshi_category"]
+            max_events=kalshi_max_events, category=alias["kalshi_category"]
         ).get_normalized_prices())
         if source in ("kalshi", "live") else None
     )

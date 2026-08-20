@@ -130,7 +130,7 @@
         el.content.appendChild(
           buildEmptyState(
             "NOTHING LOADED YET",
-            `No crosswalk pairs configured for ${c.label} yet. Click SCAN below to search this ` +
+            `No crosswalk pairs configured for ${c.label} yet. Click SCAN above to search this ` +
               "category for live arb opportunities."
           )
         );
